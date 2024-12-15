@@ -53,6 +53,7 @@ class MusicGenres(MultiAnnotatorDataset):
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
+        realistic_split: str = "none",
     ):
         # Download data.
         if download:
@@ -65,20 +66,34 @@ class MusicGenres(MultiAnnotatorDataset):
 
         # Load and prepare sample features as tensors.
         folder = os.path.join(root, MusicGenres.base_folder)
-        sc = None
-        if transform == "auto":
-            df = pd.read_csv(os.path.join(folder, "music_genre_gold.csv"), header=0)
-            sc = StandardScaler().fit(df.values[:, 1:-1].astype(np.float32))
-        if version == "train":
-            df = pd.read_csv(os.path.join(folder, "music_genre_gold.csv"), header=0)
-        elif version in ["valid", "test"]:
-            df = pd.read_csv(os.path.join(folder, "music_genre_test.csv"), header=0)
-            valid_indices, test_indices = train_test_split(
-                np.arange(len(df)), train_size=100, random_state=0, stratify=df["class"].values
+        df_train = pd.read_csv(os.path.join(folder, "music_genre_gold.csv"), header=0)
+        df_test = pd.read_csv(os.path.join(folder, "music_genre_test.csv"), header=0)
+
+        # Decide for realistic data split or the one with ground truth labels.
+        if realistic_split == "noisy":
+            train_indices, val_indices = train_test_split(
+                np.arange(len(df_train)), train_size=0.9, random_state=0
             )
-            df = df.iloc[valid_indices] if version == "valid" else df.iloc[test_indices]
+            test_indices = np.arange(len(df_test))
+            df_valid = df_train
+        else:
+            train_indices = np.arange(len(df_train))
+            valid_indices, test_indices = train_test_split(
+                np.arange(len(df_test)), train_size=100, random_state=0, stratify=df_test["class"].values
+            )
+            df_valid = df_test
+
+        if version == "train":
+            df = df_train.iloc[train_indices]
+            df_train = df_train.iloc[train_indices]
+        elif version in ["valid", "test"]:
+            df = df_valid.iloc[valid_indices] if version == "valid" else df_test.iloc[test_indices]
         else:
             raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
+
+        sc = None
+        if transform == "auto":
+            sc = StandardScaler().fit(df_train.values[:, 1:-1].astype(np.float32))
         self.x = df.values[:, 1:-1].astype(np.float32)
 
         # Set transforms.
@@ -109,7 +124,7 @@ class MusicGenres(MultiAnnotatorDataset):
         # Load and prepare annotations as tensor.
         self.z = None
         n_annotators = 44
-        if version == "train":
+        if version == "train" or realistic_split == "noisy":
             df_answers = pd.read_csv(os.path.join(folder, "music_genre_mturk.csv"), header=0)
             annotator_indices = df_answers["annotator"].unique()
             self.z = np.full((len(df), n_annotators), fill_value="not-available").astype(str)
@@ -118,6 +133,8 @@ class MusicGenres(MultiAnnotatorDataset):
                 annotator_idx = np.where(annotator_indices == row["annotator"])[0][0]
                 self.z[sample_idx, annotator_idx] = row["class"]
             self.z = torch.from_numpy(self.le.fit_transform(self.z).astype(np.int64))
+            if realistic_split == "noisy":
+                self.z = self.z[train_indices] if version == "train" else self.z[valid_indices]
 
         # Load and prepare true labels as tensor.
         self.y = df["class"].values.astype(str)

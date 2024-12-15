@@ -159,13 +159,13 @@ def evaluate(cfg):
             callbacks=[bar, checkpoint],
             deterministic="warn",
         )
-        trainer.fit(model=clf, train_dataloaders=dl_train, val_dataloaders=dl_valid)
+        trainer.fit(model=clf, train_dataloaders=dl_train)
 
         # Evaluate multi-annotator classifier after the last epoch.
         labels = list(range(ds_train.get_n_classes()))
         dl_list = [("train", dl_train_eval), ("valid", dl_valid), ("test", dl_test)]
         device = "cuda" if cfg.accelerator == "gpu" else "cpu"
-        for state, mdl in zip(["last", "best"], [clf, clf.load_from_checkpoint(checkpoint.best_model_path)]):
+        for state, mdl in zip(["last"], [clf]):
             print(f"\n############ {state} ############")
             mdl.to(device)
             mdl.eval()
