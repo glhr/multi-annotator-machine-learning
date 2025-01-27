@@ -15,6 +15,7 @@ from torchvision.transforms import (
     CenterCrop,
     RandomErasing,
 )
+from sklearn.model_selection import train_test_split, KFold
 
 from ._base import MultiAnnotatorDataset, ANNOTATOR_FEATURES, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
@@ -59,6 +60,7 @@ class LabelMe(MultiAnnotatorDataset):
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
+        realistic_split: str = "cv-5-0",
     ):
         # Download data.
         if download:
@@ -73,22 +75,39 @@ class LabelMe(MultiAnnotatorDataset):
         folder = os.path.join(root, LabelMe.base_folder)
         if version not in ["train", "valid", "test"]:
             raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
-        self.filenames = pd.read_csv(os.path.join(folder, f"filenames_{version}.txt"), header=None).values.ravel()
+        file_version = "train" if realistic_split is not None and version == "valid" else version
+        self.filenames = pd.read_csv(os.path.join(folder, f"filenames_{file_version}.txt"), header=None).values.ravel()
         for f_idx, filename in enumerate(self.filenames):
             class_directory = filename.split("_")[0]
-            self.filenames[f_idx] = os.path.join(folder, version, class_directory, filename)
+            self.filenames[f_idx] = os.path.join(folder, file_version, class_directory, filename)
 
         # Load and prepare true labels as tensor.
-        self.y = pd.read_csv(os.path.join(folder, f"labels_{version}.txt"), header=None).values.ravel()
+        self.y = pd.read_csv(os.path.join(folder, f"labels_{file_version}.txt"), header=None).values.ravel()
         self.y = torch.from_numpy(self.y.astype(np.int64))
 
         # Load and prepare annotations as tensor.
         self.z = None
-        if version == "train":
+        if (version == "train" or realistic_split is not None) and version != "test":
             self.z = pd.read_csv(os.path.join(folder, f"answers.txt"), header=None, sep=" ").values
             provided_labels = np.sum(self.z != -1, axis=0) > 0
             self.z = self.z[:, provided_labels]
             self.z = torch.from_numpy(self.z.astype(np.int64))
+
+            train_indices = np.arange(len(self.filenames))
+            if isinstance(realistic_split, float):
+                train_indices, valid_indices = train_test_split(
+                    train_indices, train_size=realistic_split, random_state=0
+                )
+            elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
+                n_splits = int(realistic_split.split("-")[1])
+                split_idx = int(realistic_split.split("-")[2])
+                k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
+
+            indices = train_indices if version == "train" else valid_indices
+            self.z = self.z[indices]
+            self.y = self.y[indices]
+            self.filenames = self.filenames[indices]
 
         # Set transforms.
         mean = (0.485, 0.456, 0.406)
@@ -116,6 +135,7 @@ class LabelMe(MultiAnnotatorDataset):
         self.z_agg = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
 
         # Print statistics.
+        print(f"variant: {version}")
         print(self)
 
     def __len__(self):

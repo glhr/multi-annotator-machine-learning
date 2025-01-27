@@ -4,6 +4,7 @@ class_definition:
   variant: "full"
   annotation_type: "class-labels"
   download: False
+  realistic_split: "cv-5-0"
 max_epochs: 50
 num_workers: 4
 train_batch_size: 64

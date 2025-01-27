@@ -7,6 +7,7 @@ import json
 from PIL import Image
 from skactiveml.utils import ExtLabelEncoder, rand_argmax
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, KFold
 from torchvision.datasets.utils import download_and_extract_archive
 from torchvision.transforms import (
     ToTensor,
@@ -138,6 +139,7 @@ class Dopanim(MultiAnnotatorDataset):
         transform: TRANSFORMS = "auto",
         variant: str = "worst-1",
         annotation_type: Literal["class-labels", "probabilities"] = "class-labels",
+        realistic_split: str = "cv-5-0",
     ):
         # Download data.
         self.folder = os.path.join(root, Dopanim.base_folder)
@@ -158,6 +160,9 @@ class Dopanim(MultiAnnotatorDataset):
         # Load annotation file.
         if version not in ["train", "valid", "test"]:
             raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
+        orig_version = version
+        is_train = (version == "train" or realistic_split is not None) and version != "test"
+        version = "train" if is_train else version
         self.img_folder = os.path.join(self.folder, version)
 
         # Load and prepare true labels as tensor.
@@ -168,10 +173,29 @@ class Dopanim(MultiAnnotatorDataset):
         # Load and prepare annotations as tensor.
         self.z = self.load_annotations() if version == "train" else None
 
+        # Create realistic split, if required.
+        if is_train:
+            train_indices = np.arange(len(self.observation_ids))
+            if isinstance(realistic_split, float):
+                train_indices, valid_indices = train_test_split(
+                    train_indices, train_size=realistic_split, random_state=0
+                )
+            elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
+                n_splits = int(realistic_split.split("-")[1])
+                split_idx = int(realistic_split.split("-")[2])
+                k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
+
+            indices = train_indices if orig_version == "train" else valid_indices
+            self.z = self.z[indices]
+            self.y = self.y[indices]
+            self.y_orig = self.y_orig[indices]
+            self.observation_ids = self.observation_ids[indices]
+
         # Set transforms.
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
-        if transform == "auto" and version == "train":
+        if transform == "auto" and orig_version == "train":
             self.transform = Compose(
                 [
                     Resize(232),
@@ -182,7 +206,7 @@ class Dopanim(MultiAnnotatorDataset):
                     Normalize(mean, std),
                 ]
             )
-        elif transform == "auto" and version in ["valid", "test"]:
+        elif transform == "auto" and orig_version in ["valid", "test"]:
             self.transform = Compose([Resize(232), CenterCrop(224), ToTensor(), Normalize(mean, std)])
         else:
             self.transform = transform
@@ -193,7 +217,7 @@ class Dopanim(MultiAnnotatorDataset):
 
         # Load and prepare annotator features as tensor if `annotators` is not `None`.
         if annotators == "metadata":
-            z = self.load_annotations() if self.z is None else self.z
+            z = self.load_annotations()
             self.a, _ = self.load_annotator_metadata(
                 classes=self.le.classes_,
                 annotators=Dopanim.annotators,
@@ -215,6 +239,7 @@ class Dopanim(MultiAnnotatorDataset):
             self.z = self.z[is_labeled]
             self.observation_ids = self.observation_ids[is_labeled]
 
+        print(f"variant: {version}")
         print(self)
 
     def __len__(self):
