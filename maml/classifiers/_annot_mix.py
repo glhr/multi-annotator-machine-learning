@@ -314,7 +314,13 @@ class AnnotMixClassifier(MaMLClassifier):
             p_confusion_log = F.log_softmax(output[1], dim=-1)
             p_confusion_log = p_confusion_log.reshape((len(x), len(a), p_class_log.shape[1], p_class_log.shape[1]))
             p_perf = (p_class_log[:, None, :, None] + p_confusion_log).exp().diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-            return {"p_class": p_class_log.exp(), "p_perf": p_perf}
+            p_annot = torch.logsumexp(p_class_log[:, None, :, None] + p_confusion_log, dim=2).exp()
+            return {
+                "p_class": p_class_log.exp(),
+                "p_perf": p_perf,
+                "p_conf": p_confusion_log.exp(),
+                "p_annot": p_annot
+            }
 
     @torch.no_grad()
     def get_gt_parameters(self):

@@ -7,14 +7,14 @@ import atexit
 import signal
 import torch
 import numpy as np
+import pandas as pd
 
 from hydra.utils import instantiate, get_class, to_absolute_path
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import RichProgressBar, ModelCheckpoint
 from mlflow import get_experiment_by_name, set_tracking_uri, log_metric, start_run, create_experiment
 from omegaconf.errors import ConfigAttributeError
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, roc_auc_score, average_precision_score, log_loss
-from mapie.metrics import top_label_ece
+from skactiveml.utils import majority_vote, compute_vote_vectors, rand_argmax
 from torch import set_float32_matmul_precision
 from torch.utils.data import DataLoader
 
@@ -67,7 +67,7 @@ def evaluate(cfg):
             annotators=cfg.classifier.annotators,
             aggregation_method=cfg.classifier.aggregation_method,
         )
-        ds_valid = instantiate(cfg.data.class_definition, version="valid")
+        ds_valid = instantiate(cfg.data.class_definition, version="valid", annotators=cfg.classifier.annotators)
         if "n_annotations_per_sample" in cfg.data.class_definition:
             cfg.data.class_definition["n_annotations_per_sample"] = -1
         ds_test = instantiate(cfg.data.class_definition, version="test", annotators=cfg.classifier.annotators)
@@ -162,7 +162,8 @@ def evaluate(cfg):
         trainer.fit(model=clf, train_dataloaders=dl_train)
 
         # Evaluate multi-annotator classifier after the last epoch.
-        labels = list(range(ds_train.get_n_classes()))
+        n_classes = ds_train.get_n_classes()
+        classes = np.arange(n_classes)
         dl_list = [("train", dl_train_eval), ("valid", dl_valid), ("test", dl_test)]
         device = "cuda" if cfg.accelerator == "gpu" else "cpu"
         for state, mdl in zip(["last"], [clf]):
@@ -170,110 +171,132 @@ def evaluate(cfg):
             mdl.to(device)
             mdl.eval()
             for version, dl in dl_list:
-                y_class_pred, p_class_pred, y_list, p_perf_list, z_list = [], [], [], [], []
+                eval_scores_dict = {}
+                normalizer_dict = {}
+                # =================================== Collect data and predictions. ===================================
                 for batch_idx, batch in enumerate(dl):
+
+                    # Helper function for loss computation.
+                    loss_name_list = ["zero_one_loss", "brier_score", "log_loss"]
+
+                    def compute_losses(probas, targets, target_name, weights=None):
+                        for loss_name in loss_name_list:
+                            # Compute sample-wise losses.
+                            if loss_name == "zero_one_loss":
+                                preds = rand_argmax(probas, axis=-1, random_state=batch_idx)
+                                preds = np.eye(n_classes)[preds]
+                                loss = (1 - np.einsum("ic,ic->i", targets, preds))
+                            elif loss_name == "brier_score":
+                                loss = ((targets - probas) ** 2).sum(axis=-1)
+                            elif loss_name == "log_loss":
+                                loss = (-targets * np.log(probas + np.finfo(np.float64).eps)).sum(axis=-1)
+                            else:
+                                raise NotImplementedError(f"`{loss_name}` is not implemented.")
+
+                            # Sum losses.
+                            if weights is not None:
+                                loss = (loss * weights).sum()
+                                normalizer = weights.sum()
+                            else:
+                                loss = loss.sum()
+                                normalizer = len(targets)
+
+                            # Log losses.
+                            loss_key = f"{target_name}_{loss_name}_{state}_{version}"
+                            eval_scores_dict[loss_key] = eval_scores_dict.get(loss_key, 0) + loss
+                            normalizer_dict[loss_key] = normalizer_dict.get(loss_key, 0) + normalizer
+
+                    # Compute predictions.
                     batch = {k: v.to(device) for k, v in batch.items()}
                     pred_dict = mdl.predict_step(batch=batch, batch_idx=batch_idx)
+                    batch = {k: v.cpu().numpy() for k, v in batch.items()}
+                    pred_dict = {k: v.cpu().numpy() for k, v in pred_dict.items()}
 
-                    # GT model.
-                    p_class_pred.append(pred_dict["p_class"].cpu())
-                    y_class_pred.append(pred_dict["p_class"].argmax(dim=-1).cpu())
-                    y_list.append(batch["y"].cpu())
+                    # Compute predictions and targets.
+                    p_class = pred_dict["p_class"]
+                    p_annot = None
+                    targets_dict = {"class_true": np.eye(n_classes)[batch["y"]]}
+                    weights_dict = {}
+                    z = batch.get("z", None)
+                    if z is not None:
+                        # Define one-hot annotations.
+                        z_ravel = z.ravel()
+                        is_labeled = z_ravel != -1
+                        z_ravel = z_ravel[is_labeled]
+                        z_ravel_one_hot = np.eye(n_classes)[z_ravel]
 
-                    # AP model.
-                    p_perf, z = pred_dict.get("p_perf", None), batch.get("z", None)
-                    if p_perf is not None and z is not None:
-                        p_perf_list.append(p_perf.cpu())
-                        z_list.append(z.cpu())
+                        # Get annotation predictions.
+                        p_annot = pred_dict["p_annot"].reshape((-1, n_classes))[is_labeled]
 
-                p_class_pred = torch.concat(p_class_pred).numpy()
-                y_class_pred, y = torch.concat(y_class_pred).numpy(), torch.concat(y_list).numpy()
-                y_one_hot = np.eye(ds_train.get_n_classes())[y]
+                        # Get annotator' performances as weights.
+                        p_unif = np.ones_like(z)
+                        p_perf = pred_dict.get("p_perf", None)
+                        p_conf = pred_dict.get("p_conf", None)
+                        if p_conf is not None:
+                            p_conf_diag = p_conf.diagonal(axis1=-2, axis2=-1).mean(axis=-1)
+                        for suffix, weights in zip(["unif", "perf", "conf"], [p_unif, p_perf, p_conf_diag]):
+                            is_unif = suffix == "unif"
+                            if weights is None:
+                                continue
 
-                # Compute gt accuracy.
-                gt_acc = accuracy_score(y_true=y, y_pred=y_class_pred)
-                gt_acc_name = f"gt_{version}_acc_{state}"
-                print(f"{gt_acc_name}: {gt_acc}")
-                log_metric(gt_acc_name, gt_acc)
+                            # Use hard majority votes as targets.
+                            agg = f"class_mv_{suffix}"
+                            targets_dict[agg] = majority_vote(
+                                y=z,
+                                w=weights,
+                                missing_label=-1,
+                                random_state=batch_idx
+                            )
+                            targets_dict[agg] = np.eye(n_classes)[targets_dict[agg]]
+                            if not is_unif:
+                                weights_dict[agg] = weights.mean(axis=-1)
 
-                # Compute gt balanced accuracy.
-                gt_bal_acc = balanced_accuracy_score(y_true=y, y_pred=y_class_pred)
-                gt_bal_acc_name = f"gt_{version}_bal_acc_{state}"
-                print(f"{gt_bal_acc_name}: {gt_bal_acc}")
-                log_metric(gt_bal_acc_name, gt_bal_acc)
+                            # Use hard majority votes as targets.
+                            agg = f"class_smv_{suffix}"
+                            targets_dict[agg] = compute_vote_vectors(
+                                y=z,
+                                w=pred_dict["p_perf"],
+                                missing_label=-1,
+                                classes=classes
+                            )
+                            targets_dict[agg] = targets_dict[agg] / targets_dict[agg].sum(axis=-1, keepdims=True)
+                            if not is_unif:
+                                weights_dict[agg] = weights.mean(axis=-1)
 
-                # Compute gt brier score.
-                gt_brier_score = np.mean(np.sum((p_class_pred - y_one_hot)**2, axis=1))
-                gt_brier_score_name = f"gt_{version}_brier_score_{state}"
-                print(f"{gt_brier_score_name}: {gt_brier_score}")
-                log_metric(gt_brier_score_name, gt_brier_score)
+                            # Use noisy annotations as targets.
+                            agg = f"annot_{suffix}"
+                            targets_dict[agg] = z_ravel_one_hot
+                            if not is_unif:
+                                weights_dict[agg] = weights.ravel()[is_labeled]
 
-                # Compute gt log loss.
-                gt_log_loss = log_loss(y_true=y, y_pred=p_class_pred, normalize=True, labels=labels)
-                gt_log_loss_name = f"gt_{version}_log_loss_{state}"
-                print(f"{gt_log_loss_name}: {gt_log_loss}")
-                log_metric(gt_log_loss_name, gt_log_loss)
+                        # Use corrected class labels as targets.
+                        if p_conf is not None:
+                            p_conf_log = np.log(p_conf)
+                            z_one_hot = np.eye(n_classes + 1)[z + 1][:, :, 1:]
+                            p_bayes_log = (p_conf_log * z_one_hot[:, :, None, :]).sum(axis=(1, 3)) #+ np.log(p_class)
+                            p_bayes = np.exp(p_bayes_log) / np.exp(p_bayes_log).sum(axis=-1, keepdims=True)
+                            targets_dict["class_soft_bayes"] = p_bayes
+                            one_hot_bayes = np.eye(n_classes)[rand_argmax(p_bayes, random_state=batch_idx, axis=-1)]
+                            targets_dict["class_hard_bayes"] = one_hot_bayes
 
-                # Compute gt tce.
-                gt_tce = top_label_ece(y_true=y, y_scores=p_class_pred, num_bins=10)
-                gt_tce_name = f"gt_{version}_tce_{state}"
-                print(f"{gt_tce_name}: {gt_tce}")
-                log_metric(gt_tce_name, gt_tce)
+                    # Evaluate predictions.
+                    for k, v in targets_dict.items():
+                        probas = p_class if k.startswith("class") else p_annot
+                        compute_losses(probas=probas, targets=v, target_name=k)
+                        w = weights_dict.get(k, None)
+                        if w is not None:
+                            compute_losses(probas=probas, targets=v, target_name=f"{k}_weights", weights=w)
 
-                if len(p_perf_list) > 0 and len(z) > 0:
-                    p_perf, z = torch.concat(p_perf_list).numpy(), torch.concat(z_list).numpy()
-                    is_labeled = z != -1
-                    is_true = y[:, None] == z
-                    is_true = is_true.ravel()[is_labeled.ravel()]
-                    p_perf = p_perf.ravel()[is_labeled.ravel()]
-                    y_ap_pred = p_perf > 0.5
-
-                    # Compute ap accuracy.
-                    ap_acc = accuracy_score(y_true=is_true, y_pred=y_ap_pred)
-                    ap_acc_name = f"ap_{version}_acc_{state}"
-                    print(f"{ap_acc_name}: {ap_acc}")
-                    log_metric(ap_acc_name, ap_acc)
-
-                    # Compute ap balanced accuracy.
-                    ap_bal_acc = balanced_accuracy_score(y_true=is_true, y_pred=y_ap_pred)
-                    ap_bal_acc_name = f"ap_{version}_bal_acc_{state}"
-                    print(f"{ap_bal_acc_name}: {ap_bal_acc}")
-                    log_metric(ap_bal_acc_name, ap_bal_acc)
-
-                    # Compute ap auroc.
-                    ap_auroc = roc_auc_score(y_true=is_true, y_score=p_perf)
-                    ap_auroc_name = f"ap_{version}_auroc_{state}"
-                    print(f"{ap_auroc_name}: {ap_auroc}")
-                    log_metric(ap_auroc_name, ap_auroc)
-
-                    # Compute ap aupr.
-                    ap_aupr_0 = average_precision_score(y_true=is_true, y_score=p_perf)
-                    ap_aupr_0_name = f"ap_{version}_aupr_0_{state}"
-                    print(f"{ap_aupr_0_name}: {ap_aupr_0}")
-                    log_metric(ap_aupr_0_name, ap_aupr_0)
-                    ap_aupr_1 = average_precision_score(y_true=1 - is_true, y_score=1 - p_perf)
-                    ap_aupr_1_name = f"ap_{version}_aupr_1_{state}"
-                    print(f"{ap_aupr_1_name}: {ap_aupr_1}")
-                    log_metric(ap_aupr_1_name, ap_aupr_1)
-
-                    # Compute ap brier score.
-                    ap_brier_score = np.mean((p_perf - is_true) ** 2)
-                    ap_brier_score_name = f"ap_{version}_brier_score_{state}"
-                    print(f"{ap_brier_score_name}: {ap_brier_score}")
-                    log_metric(ap_brier_score_name, ap_brier_score)
-
-                    # Compute ap log loss.
-                    ap_log_loss = log_loss(y_true=is_true, y_pred=p_perf, normalize=True, labels=[0, 1])
-                    ap_log_loss_name = f"ap_{version}_log_loss_{state}"
-                    print(f"{ap_log_loss_name}: {ap_log_loss}")
-                    log_metric(ap_log_loss_name, ap_log_loss)
-
-                    # Compute ap tce.
-                    p_perf_binary = np.column_stack((1-p_perf, p_perf))
-                    ap_tce = top_label_ece(y_true=is_true, y_scores=p_perf_binary, num_bins=10)
-                    ap_tce_name = f"ap_{version}_tce_{state}"
-                    print(f"{ap_tce_name}: {ap_tce}")
-                    log_metric(ap_tce_name, ap_tce)
+                # Normalize evaluation scores.
+                for k, v in eval_scores_dict.items():
+                    eval_scores_dict[k] = [eval_scores_dict[k] / normalizer_dict[k]]
+                eval_df = pd.DataFrame(eval_scores_dict).T
+                eval_df.columns = ["value"]
+                eval_df.index.name = version
+                for loss_name in loss_name_list:
+                    is_loss = [l for l in eval_df.index if loss_name in l]
+                    print(f"{eval_df.loc[is_loss].to_markdown(tablefmt='github', floatfmt='.4f')}")
+                    print("\n")
 
 
 if __name__ == "__main__":
