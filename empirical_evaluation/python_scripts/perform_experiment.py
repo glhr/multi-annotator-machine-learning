@@ -290,6 +290,7 @@ def evaluate(cfg):
                 # Normalize evaluation scores.
                 for k, v in eval_scores_dict.items():
                     eval_scores_dict[k] = [eval_scores_dict[k] / normalizer_dict[k]]
+                    log_metric(k, eval_scores_dict[k])
                 eval_df = pd.DataFrame(eval_scores_dict).T
                 eval_df.columns = ["value"]
                 eval_df.index.name = version
