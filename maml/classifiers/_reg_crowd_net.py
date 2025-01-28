@@ -143,7 +143,7 @@ class RegCrowdNetClassifier(MaMLClassifier):
             z=batch["z"],
             logits_class=logits_class,
             ap_confs=self.ap_confs,
-            ap_outlier_terms=self.ap_outlier_terms[batch["idx"]],
+            ap_outlier_terms=self.ap_outlier_terms[batch["idx"]] if self.ap_outlier_terms is not None else None,
             lmbda=self.lmbda,
             regularization=self.regularization,
         )
@@ -178,7 +178,13 @@ class RegCrowdNetClassifier(MaMLClassifier):
             p_confusion_log = F.log_softmax(self.ap_confs[batch["a"]], dim=-1)
             p_confusion = (p_class_log[:, None, :, None] + p_confusion_log).exp()
             p_perf = p_confusion.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-            return {"p_class": p_class_log.exp(), "p_perf": p_perf}
+            p_annot = torch.logsumexp(p_class_log[:, None, :, None] + p_confusion_log, dim=2).exp()
+            return {
+                "p_class": p_class_log.exp(),
+                "p_perf": p_perf,
+                "p_conf": p_confusion_log.exp(),
+                "p_annot": p_annot
+            }
 
     @staticmethod
     def loss(
