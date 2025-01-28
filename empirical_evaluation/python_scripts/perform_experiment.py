@@ -189,7 +189,7 @@ def evaluate(cfg):
                             elif loss_name == "brier_score":
                                 loss = ((targets - probas) ** 2).sum(axis=-1)
                             elif loss_name == "log_loss":
-                                loss = (-targets * np.log(probas + np.finfo(np.float64).eps)).sum(axis=-1)
+                                loss = (-targets * np.log(probas + np.finfo(np.float32).eps)).sum(axis=-1)
                             else:
                                 raise NotImplementedError(f"`{loss_name}` is not implemented.")
 
@@ -220,13 +220,14 @@ def evaluate(cfg):
                     z = batch.get("z", None)
                     if z is not None:
                         # Define one-hot annotations.
+                        is_labeled = z != -1
                         z_ravel = z.ravel()
-                        is_labeled = z_ravel != -1
-                        z_ravel = z_ravel[is_labeled]
+                        is_labeled_ravel = is_labeled.ravel()
+                        z_ravel = z_ravel[is_labeled_ravel]
                         z_ravel_one_hot = np.eye(n_classes)[z_ravel]
 
                         # Get annotation predictions.
-                        p_annot = pred_dict["p_annot"].reshape((-1, n_classes))[is_labeled]
+                        p_annot = pred_dict["p_annot"].reshape((-1, n_classes))[is_labeled_ravel]
 
                         # Get annotator' performances as weights.
                         p_unif = np.ones_like(z)
@@ -247,9 +248,10 @@ def evaluate(cfg):
                                 missing_label=-1,
                                 random_state=batch_idx
                             )
+                            is_mv = z == targets_dict[agg][:, None]
                             targets_dict[agg] = np.eye(n_classes)[targets_dict[agg]]
                             if not is_unif:
-                                weights_dict[agg] = weights.mean(axis=-1)
+                                weights_dict[agg] = (weights * is_mv).sum(axis=-1) / is_mv.sum(axis=-1)
 
                             # Use hard majority votes as targets.
                             agg = f"class_smv_{suffix}"
@@ -261,17 +263,17 @@ def evaluate(cfg):
                             )
                             targets_dict[agg] = targets_dict[agg] / targets_dict[agg].sum(axis=-1, keepdims=True)
                             if not is_unif:
-                                weights_dict[agg] = weights.mean(axis=-1)
+                                weights_dict[agg] = (weights * is_labeled).sum(axis=-1) / is_labeled.sum(axis=-1)
 
                             # Use noisy annotations as targets.
                             agg = f"annot_{suffix}"
                             targets_dict[agg] = z_ravel_one_hot
                             if not is_unif:
-                                weights_dict[agg] = weights.ravel()[is_labeled]
+                                weights_dict[agg] = weights.ravel()[is_labeled_ravel]
 
                         # Use corrected class labels as targets.
                         if p_conf is not None:
-                            p_conf_log = np.log(p_conf)
+                            p_conf_log = np.log(p_conf + np.finfo(np.float32).eps)
                             z_one_hot = np.eye(n_classes + 1)[z + 1][:, :, 1:]
                             p_bayes_log = (p_conf_log * z_one_hot[:, :, None, :]).sum(axis=(1, 3)) #+ np.log(p_class)
                             p_bayes = np.exp(p_bayes_log) / np.exp(p_bayes_log).sum(axis=-1, keepdims=True)
