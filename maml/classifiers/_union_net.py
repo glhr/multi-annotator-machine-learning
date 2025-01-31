@@ -54,6 +54,7 @@ class UnionNetClassifier(MaMLClassifier):
         gt_embed_x: nn.Module,
         gt_output: nn.Module,
         epsilon: Optional[float] = 1e-5,
+        is_variant_b: bool = True,
         optimizer: Optional[Optimizer.__class__] = RAdam,
         optimizer_gt_dict: Optional[dict] = None,
         optimizer_ap_dict: Optional[dict] = None,
@@ -72,6 +73,7 @@ class UnionNetClassifier(MaMLClassifier):
         self.gt_embed_x = gt_embed_x
         self.gt_output = gt_output
         self.epsilon = epsilon
+        self.is_variant_b = is_variant_b
 
         # Create transition matrix: cf. Eq. (7) in the article [1].
         init_matrix = (1 - epsilon) * torch.eye(n_classes) + epsilon / (n_classes - 1) * (1 - torch.eye(n_classes))
@@ -112,8 +114,12 @@ class UnionNetClassifier(MaMLClassifier):
         if not return_ap_outputs:
             return p_class
 
-        # Compute logits per annotator: cf. input of logarithm function of Eq. (6) in the article [1].
-        p_union = p_class @ F.softmax(self.transition_matrix, dim=0).T
+        if self.is_variant_b:
+            # Compute logits per annotator: cf. input of logarithm function of Eq. (6) in the article [1].
+            p_union = p_class @ F.softmax(self.transition_matrix, dim=0).T
+        else:
+            # Compute logits per annotator: cf. input of logarithm function of Eq. (5) in the article [1].
+            p_union = F.softmax(p_class @ self.transition_matrix.T, dim=0)
 
         return p_class, p_union
 
@@ -174,7 +180,7 @@ class UnionNetClassifier(MaMLClassifier):
             p_annot /= p_annot.sum(dim=-1, keepdims=True)
             p_perf = torch.stack([torch.einsum("ij,ik->ijk", p_class, p_annot[:, i, :]) for i in a[0]])
             p_perf = p_perf.swapaxes(0, 1).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-            return {"p_class": p_class, "p_perf": p_perf}
+            return {"p_class": p_class, "p_perf": p_perf, "p_annot": p_annot}
 
     @staticmethod
     def loss(z: torch.tensor, p_union: torch.tensor, n_classes: int):

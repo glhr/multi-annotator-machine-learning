@@ -206,8 +206,8 @@ class CrowdARClassifier(MaMLClassifier):
             p_class = self.forward(x=batch["x"], return_ap_outputs=False)
             return {"p_class": p_class}
         else:
-            p_class, _, p_reliability = self.forward(x=batch["x"], return_ap_outputs=True)
-            return {"p_class": p_class, "p_perf": p_reliability}
+            p_class, logits_annot, p_reliability = self.forward(x=batch["x"], return_ap_outputs=True)
+            return {"p_class": p_class, "p_perf": p_reliability, "p_annot": logits_annot.softmax(dim=-1)}
 
     @staticmethod
     def loss(

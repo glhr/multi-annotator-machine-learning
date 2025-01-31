@@ -201,7 +201,7 @@ class CoNALClassifier(MaMLClassifier):
             p_annot = F.softmax(logits_annot, dim=-1)
             p_perf = torch.stack([torch.einsum("ij,ik->ijk", p_class, p_annot[:, i, :]) for i in range(a.shape[-1])])
             p_perf = p_perf.swapaxes(0, 1).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-            return {"p_class": p_class, "p_perf": p_perf}
+            return {"p_class": p_class, "p_perf": p_perf, "p_annot": p_annot}
 
     @staticmethod
     def loss(

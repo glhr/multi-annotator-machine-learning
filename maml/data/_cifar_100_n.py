@@ -5,14 +5,17 @@ import pandas as pd
 import requests
 
 from PIL import Image
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from torchvision.datasets import CIFAR100
 from torchvision.transforms import (
-    Compose,
-    Normalize,
-    RandomCrop,
-    RandomHorizontalFlip,
     ToTensor,
+    Normalize,
+    Compose,
+    RandomResizedCrop,
+    RandomHorizontalFlip,
+    Resize,
+    CenterCrop,
+    RandomErasing,
 )
 from ._base import MultiAnnotatorDataset, ANNOTATOR_FEATURES, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
@@ -59,11 +62,13 @@ class CIFAR100N(MultiAnnotatorDataset):
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
+        realistic_split: str = "cv-5-0",
     ):
+        is_train = (version == "train" or realistic_split is not None) and version != "test"
         # Download data.
         cifar100 = CIFAR100(
             root=root,
-            train=(version == "train"),
+            train=is_train,
             download=download,
         )
         if download:
@@ -76,23 +81,6 @@ class CIFAR100N(MultiAnnotatorDataset):
                 with open(os.path.join(root, filename), mode="wb") as file:
                     file.write(response.content)
 
-        # Set transforms.
-        mean = (0.5071, 0.4867, 0.4408)
-        std = (0.2675, 0.2565, 0.2761)
-        if transform == "auto" and version == "train":
-            self.transform = Compose(
-                [
-                    RandomCrop(32, padding=4),
-                    RandomHorizontalFlip(),
-                    ToTensor(),
-                    Normalize(mean, std),
-                ]
-            )
-        elif transform == "auto" and version in ["valid", "test"]:
-            self.transform = Compose([ToTensor(), Normalize(mean, std)])
-        else:
-            self.transform = transform
-
         # Check availability of data.
         is_available = os.path.exists(os.path.join(root, CIFAR100N.side_information_filename)) and os.path.exists(
             os.path.join(root, CIFAR100N.annotations_filename)
@@ -100,13 +88,32 @@ class CIFAR100N(MultiAnnotatorDataset):
         if not is_available:
             raise RuntimeError("Dataset not found. You can use `download=True` to download it.")
 
+        # Set transforms.
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        if transform == "auto" and version == "train":
+            self.transform = Compose(
+                [
+                    Resize(232),
+                    RandomResizedCrop(224),
+                    RandomHorizontalFlip(),
+                    ToTensor(),
+                    RandomErasing(),
+                    Normalize(mean, std),
+                ]
+            )
+        elif transform == "auto" and version in ["valid", "test"]:
+            self.transform = Compose([Resize(232), CenterCrop(224), ToTensor(), Normalize(mean, std)])
+        else:
+            self.transform = transform
+
         # Set samples and targets.
         self.x = cifar100.data
         self.y = torch.tensor(cifar100.targets).long()
 
         # Load and prepare annotations as tensor for `version="train"`.
         self.z = None
-        if version == "train":
+        if is_train:
             side_information_file = os.path.join(root, CIFAR100N.side_information_filename)
             annotator_ids = pd.read_csv(side_information_file)[["Worker-id"]].values
             annotator_ids = np.repeat(annotator_ids, repeats=5, axis=0).astype(int).ravel()
@@ -114,12 +121,28 @@ class CIFAR100N(MultiAnnotatorDataset):
             annotation_file = os.path.join(root, CIFAR100N.annotations_filename)
             annotations = torch.load(annotation_file)
             self.z[np.arange(len(self.x)), annotator_ids] = torch.from_numpy(annotations["noisy_label"])
+            train_indices = torch.arange(len(self.x))
+            if isinstance(realistic_split, float):
+                train_indices, valid_indices = train_test_split(
+                    train_indices, train_size=realistic_split, random_state=0
+                )
+            elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
+                n_splits = int(realistic_split.split("-")[1])
+                split_idx = int(realistic_split.split("-")[2])
+                k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
+            version_indices = train_indices if version == "train" else valid_indices
+            self.z = self.z[version_indices]
         elif version in ["valid", "test"]:
-            valid_indices, test_indices = train_test_split(
+            version_indices = torch.arange(len(self.x))
+            if realistic_split is None:
+                valid_indices, test_indices = train_test_split(
                 torch.arange(len(self.x)), train_size=500, random_state=0, stratify=self.y
-            )
-            version_indices = valid_indices if version == "valid" else test_indices
-            self.x, self.y = self.x[version_indices], self.y[version_indices]
+                )
+                version_indices = valid_indices if version == "valid" else test_indices
+
+        # Index filenames and labels according to version.
+        self.x, self.y = self.x[version_indices], self.y[version_indices]
 
         # Load and prepare annotator features as tensor if `annotators` is not `None`.
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
@@ -128,6 +151,7 @@ class CIFAR100N(MultiAnnotatorDataset):
         self.z_agg = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
 
         # Print statistics.
+        print(version)
         print(self)
 
     def __len__(self):

@@ -2,19 +2,20 @@ class_definition:
   _target_: maml.data.CIFAR100N
   root: "."
   download: False
-max_epochs: 100
+  realistic_split: "cv-5-0"
+max_epochs: 50
 num_workers: 4
-train_batch_size: 128
+train_batch_size: 64
 eval_batch_size: 128
 optimizer:
   class_definition: torch.optim.RAdam
   gt_params:
-    lr: 1e-3
+    lr: 1e-2
     weight_decay: 1e-4
   ap_params:
-    lr: 1e-3
+    lr: 1e-2
     weight_decay: 0
 lr_scheduler:
   class_definition: torch.optim.lr_scheduler.CosineAnnealingLR
   params:
-    T_max: 100
+    T_max: 50

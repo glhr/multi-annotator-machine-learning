@@ -214,31 +214,32 @@ def evaluate(cfg):
 
                     # Compute predictions and targets.
                     p_class = pred_dict["p_class"]
-                    p_annot = None
+                    p_annot = pred_dict.get("p_annot", None)
                     targets_dict = {"class_true": np.eye(n_classes)[batch["y"]]}
                     weights_dict = {}
                     z = batch.get("z", None)
                     if z is not None:
-                        # Define one-hot annotations.
+                        # Mask out missing annotations.
                         is_labeled = z != -1
                         z_ravel = z.ravel()
                         is_labeled_ravel = is_labeled.ravel()
                         z_ravel = z_ravel[is_labeled_ravel]
                         z_ravel_one_hot = np.eye(n_classes)[z_ravel]
+                        if p_annot is not None:
+                            p_annot = p_annot.reshape((-1, n_classes))[is_labeled_ravel]
 
-                        # Get annotation predictions.
-                        p_annot = pred_dict["p_annot"].reshape((-1, n_classes))[is_labeled_ravel]
-
-                        # Get annotator' performances as weights.
-                        p_unif = np.ones_like(z)
-                        p_perf = pred_dict.get("p_perf", None)
-                        p_conf = pred_dict.get("p_conf", None)
-                        if p_conf is not None:
-                            p_conf_diag = p_conf.diagonal(axis1=-2, axis2=-1).mean(axis=-1)
-                        for suffix, weights in zip(["unif", "perf", "conf"], [p_unif, p_perf, p_conf_diag]):
-                            is_unif = suffix == "unif"
+                        # Get annotator's performances as weights.
+                        p_dict = {
+                            "unif": np.ones_like(z),
+                            "perf": pred_dict.get("p_perf", None),
+                            "conf": pred_dict.get("p_conf", None)
+                        }
+                        if p_dict["conf"] is not None:
+                            p_dict["conf"] = p_dict["conf"].diagonal(axis1=-2, axis2=-1).mean(axis=-1)
+                        for suffix, weights in p_dict.items():
                             if weights is None:
                                 continue
+                            is_unif = suffix == "unif"
 
                             # Use hard majority votes as targets.
                             agg = f"class_mv_{suffix}"
@@ -257,7 +258,7 @@ def evaluate(cfg):
                             agg = f"class_smv_{suffix}"
                             targets_dict[agg] = compute_vote_vectors(
                                 y=z,
-                                w=pred_dict["p_perf"],
+                                w=weights,
                                 missing_label=-1,
                                 classes=classes
                             )
@@ -266,20 +267,11 @@ def evaluate(cfg):
                                 weights_dict[agg] = (weights * is_labeled).sum(axis=-1) / is_labeled.sum(axis=-1)
 
                             # Use noisy annotations as targets.
-                            agg = f"annot_{suffix}"
-                            targets_dict[agg] = z_ravel_one_hot
-                            if not is_unif:
-                                weights_dict[agg] = weights.ravel()[is_labeled_ravel]
-
-                        # Use corrected class labels as targets.
-                        if p_conf is not None:
-                            p_conf_log = np.log(p_conf + np.finfo(np.float32).eps)
-                            z_one_hot = np.eye(n_classes + 1)[z + 1][:, :, 1:]
-                            p_bayes_log = (p_conf_log * z_one_hot[:, :, None, :]).sum(axis=(1, 3)) #+ np.log(p_class)
-                            p_bayes = np.exp(p_bayes_log) / np.exp(p_bayes_log).sum(axis=-1, keepdims=True)
-                            targets_dict["class_soft_bayes"] = p_bayes
-                            one_hot_bayes = np.eye(n_classes)[rand_argmax(p_bayes, random_state=batch_idx, axis=-1)]
-                            targets_dict["class_hard_bayes"] = one_hot_bayes
+                            if p_annot is not None:
+                                agg = f"annot_{suffix}"
+                                targets_dict[agg] = z_ravel_one_hot
+                                if not is_unif:
+                                    weights_dict[agg] = weights.ravel()[is_labeled_ravel]
 
                     # Evaluate predictions.
                     for k, v in targets_dict.items():

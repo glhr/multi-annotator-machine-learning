@@ -1,6 +1,7 @@
-name: "union_net"
+name: "union_net_b"
 class_definition:
   _target_: maml.classifiers.UnionNetClassifier
+  is_variant_b: True
 params:
   epsilon: 1e-5
 annotators: "index"

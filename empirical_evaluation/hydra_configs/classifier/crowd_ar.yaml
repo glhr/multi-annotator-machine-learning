@@ -1,4 +1,4 @@
-name: "crowdar"
+name: "crowd_ar"
 class_definition:
   _target_: maml.classifiers.CrowdARClassifier
 params:

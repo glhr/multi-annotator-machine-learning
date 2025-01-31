@@ -13,12 +13,13 @@ CLASSIFIER_NAMES = Literal[
     "aggregate",
     "annot_mix",
     "conal",
-    "crowdar",
+    "crowd_ar",
     "madl",
     "trace_reg",
     "geo_reg_f",
     "geo_reg_w",
-    "union_net",
+    "union_net_a",
+    "union_net_b",
     "crowd_layer",
 ]
 ARCHITECTURE_NAMES = Literal["resnet", "tabnet", "dino"]
@@ -139,7 +140,7 @@ def maml_net_params(
     elif classifier_name == "conal":
         params_dict["n_classes"] = n_classes
         params_dict["annotators"] = annotators
-    elif classifier_name in ["trace_reg", "geo_reg_f", "geo_reg_w", "crowdar", "union_net", "crowd_layer"]:
+    elif classifier_name in ["trace_reg", "geo_reg_f", "geo_reg_w", "crowd_ar", "union_net_a", "union_net_b", "crowd_layer"]:
         params_dict["n_classes"] = n_classes
         params_dict["n_annotators"] = n_annotators
     params_dict["optimizer"] = optimizer
@@ -202,7 +203,7 @@ def _ap_net_params(
             params_dict["ap_output"] = None if classifier_name == "aggregate" else ap_output()
             if classifier_name == "madl":
                 params_dict["ap_outer_product"] = ap_outer_product()
-    elif classifier_name == "crowdar":
+    elif classifier_name == "crowd_ar":
         params_dict["gt_embed_dim_x"] = n_hidden_neurons
     elif classifier_name == "annot_mix":
         params_dict["ap_embed_a"] = ap_embed_a
