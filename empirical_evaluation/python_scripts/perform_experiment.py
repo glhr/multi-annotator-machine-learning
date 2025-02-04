@@ -40,20 +40,6 @@ def evaluate(cfg):
     print(cfg.classifier.name)
 
     with start_run(experiment_id=experiment_id):
-        # Get path to artifacts and ensure that artifact is deleted after program termination or cancellation.
-        artifacts_path = mlflow.active_run().info.artifact_uri.split("file://")[1]
-        def cleanup_function():
-            if os.path.exists(artifacts_path):
-                try:
-                    os.remove(os.path.join(artifacts_path, "best.ckpt"))
-                except FileNotFoundError:
-                    pass
-        atexit.register(cleanup_function)
-        def signal_handler(sig, frame):
-            cleanup_function()
-            sys.exit(0)
-        signal.signal(signal.SIGINT, signal_handler)
-
         # Log configuration.
         log_params_from_omegaconf_dict(cfg)
 
@@ -142,21 +128,14 @@ def evaluate(cfg):
 
         # Create callbacks for progressbar and checkpointing.
         bar = RichProgressBar()
-        checkpoint = ModelCheckpoint(
-            monitor="gt_val_acc",
-            dirpath=artifacts_path,
-            filename="best",
-            mode="max",
-            save_top_k=1,
-            save_last=False,
-        )
 
         # Train multi-annotator classifier.
         trainer = Trainer(
             max_epochs=cfg.data.max_epochs,
             accelerator=cfg.accelerator,
             logger=False,
-            callbacks=[bar, checkpoint],
+            callbacks=[bar],
+            enable_checkpointing=False,
             deterministic="warn",
         )
         trainer.fit(model=clf, train_dataloaders=dl_train)
@@ -164,7 +143,7 @@ def evaluate(cfg):
         # Evaluate multi-annotator classifier after the last epoch.
         n_classes = ds_train.get_n_classes()
         classes = np.arange(n_classes)
-        dl_list = [("train", dl_train_eval), ("valid", dl_valid), ("test", dl_test)]
+        dl_list = [("valid", dl_valid), ("test", dl_test)]
         device = "cuda" if cfg.accelerator == "gpu" else "cpu"
         for state, mdl in zip(["last"], [clf]):
             print(f"\n############ {state} ############")
