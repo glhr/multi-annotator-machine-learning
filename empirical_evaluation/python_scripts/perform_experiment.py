@@ -1,10 +1,6 @@
-import os
 import hydra
 import sys
 import warnings
-import mlflow
-import atexit
-import signal
 import torch
 import numpy as np
 import pandas as pd
@@ -57,15 +53,6 @@ def evaluate(cfg):
         if "n_annotations_per_sample" in cfg.data.class_definition:
             cfg.data.class_definition["n_annotations_per_sample"] = -1
         ds_test = instantiate(cfg.data.class_definition, version="test", annotators=cfg.classifier.annotators)
-        class_definition = cfg.data.class_definition.copy()
-        if "variant" in cfg.data.class_definition:
-            class_definition["variant"] = "full"
-        ds_train_eval = instantiate(
-            class_definition,
-            annotators=cfg.classifier.annotators,
-            transform=ds_test.transform if ds_test.transform else "auto",
-            aggregation_method=cfg.classifier.aggregation_method,
-        )
 
         # Set embedding dimension for AP architectures.
         try:
@@ -84,7 +71,9 @@ def evaluate(cfg):
             gt_params_dict={"n_classes": ds_train.get_n_classes(), **gt_params_dict},
             classifier_name=cfg.classifier.name,
             n_annotators=ds_train.get_n_annotators(),
+            n_samples=len(ds_train),
             annotators=ds_train.get_annotators(),
+            ap_confs=ds_train.ap_confs,
             classifier_specific=cfg.classifier.params,
             optimizer=get_class(cfg.data.optimizer.class_definition),
             optimizer_gt_dict=cfg.data.optimizer.gt_params,
@@ -108,7 +97,6 @@ def evaluate(cfg):
             )
             device = "cuda" if cfg.accelerator == "gpu" else "cpu"
             ds_train = SSLDatasetWrapper(dataset=ds_train, model=ssl_model, cache=True, device=device)
-            ds_train_eval = SSLDatasetWrapper(dataset=ds_train_eval, model=ssl_model, cache=True, device=device)
             ds_valid = SSLDatasetWrapper(dataset=ds_valid, model=ssl_model, cache=True, device=device)
             ds_test = SSLDatasetWrapper(dataset=ds_test, model=ssl_model, cache=True, device=device)
 
@@ -119,9 +107,6 @@ def evaluate(cfg):
             num_workers=cfg.data.num_workers,
             shuffle=True,
             drop_last=True
-        )
-        dl_train_eval = DataLoader(
-            dataset=ds_train_eval, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers
         )
         dl_valid = DataLoader(dataset=ds_valid, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)
         dl_test = DataLoader(dataset=ds_test, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)

@@ -9,3 +9,7 @@ experiment_name: "test"
 mlruns_path: "."
 accelerator: "cpu"
 seed: 0
+# TODO: Replace path for saving results via `hydra`.
+hydra:
+  run:
+    dir: ".outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}"

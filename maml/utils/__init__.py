@@ -1,3 +1,4 @@
+from ._aggregate import dawid_skene_aggregation
 from ._annotator_simulation import insert_missing_annotations, multisample_from_probs, simulate_annotator_classifiers
 from ._kernels import cosine_kernel, rbf_kernel
 from ._logging import log_params_from_omegaconf_dict

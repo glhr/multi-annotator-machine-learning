@@ -147,7 +147,7 @@ class MusicGenres(MultiAnnotatorDataset):
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
 
         # Print statistics.
         print(f"variant: {version}")

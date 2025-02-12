@@ -28,7 +28,11 @@ class RegCrowdNetClassifier(MaMLClassifier):
     gt_output : nn.Module
         Pytorch module of the GT model taking the embedding the samples as input to predict class-membership logits.
     lmbda : non-negative float, optional (default=0.01)
-        Degree of regularization.
+        Regularization term penalizing confusion matrices.
+    mu : non-negative float, optional (default=0.01)
+        Regularization term penalizing instance-dependent outliers. Only relevant for "coin-net".
+    p : non-negative float in (0, 1], optional (default=0.4)
+        Norm to compute regularization term for instance-dependent outliers. Only relevant for "coin-net".
     regularization : "trace-reg" or "geo-reg-f" or "geo-reg-w"
         Defines which regularization for the annotator confusion matrices is applied, either by regularizing the traces
         of the confusion matrices [1] or a geometrically motivated regularization [2].
@@ -63,7 +67,9 @@ class RegCrowdNetClassifier(MaMLClassifier):
         gt_embed_x: nn.Module,
         gt_output: nn.Module,
         n_samples: Optional[int] = -1,
-        lmbda: Union[str, float] = "auto",
+        lmbda: float = 0.01,
+        mu: float = 0.01,
+        p: float = 0.4,
         regularization: Literal["trace-reg", "geo-reg-f", "geo-reg-w"] = "trace-reg",
         optimizer: Optional[Optimizer.__class__] = RAdam,
         optimizer_gt_dict: Optional[dict] = None,
@@ -84,6 +90,8 @@ class RegCrowdNetClassifier(MaMLClassifier):
         self.gt_output = gt_output
         self.n_samples = n_samples
         self.lmbda = lmbda
+        self.mu = mu
+        self.p = p
         self.regularization = regularization
 
         # Perform initialization of confusion matrices and potential outlier terms.
@@ -145,6 +153,8 @@ class RegCrowdNetClassifier(MaMLClassifier):
             ap_confs=self.ap_confs,
             ap_outlier_terms=self.ap_outlier_terms[batch["idx"]] if self.ap_outlier_terms is not None else None,
             lmbda=self.lmbda,
+            mu=self.mu,
+            p=self.p,
             regularization=self.regularization,
         )
         return loss
@@ -175,7 +185,7 @@ class RegCrowdNetClassifier(MaMLClassifier):
             return {"p_class": F.softmax(output, dim=-1)}
         else:
             p_class_log = F.log_softmax(output, dim=-1)
-            p_confusion_log = F.log_softmax(self.ap_confs[batch["a"]], dim=-1)
+            p_confusion_log = F.log_softmax(self.ap_confs[a], dim=-1)
             p_confusion = (p_class_log[:, None, :, None] + p_confusion_log).exp()
             p_perf = p_confusion.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
             p_annot = torch.logsumexp(p_class_log[:, None, :, None] + p_confusion_log, dim=2).exp()
@@ -193,6 +203,8 @@ class RegCrowdNetClassifier(MaMLClassifier):
         ap_confs: torch.tensor,
         ap_outlier_terms: Optional[torch.tensor] = None,
         lmbda: float = 0.01,
+        mu: float = 0.01,
+        p: float = 0.4,
         regularization: Literal["trace-reg", "geo-reg-f", "geo-reg-w"] = "trace-reg",
     ):
         """
@@ -212,7 +224,11 @@ class RegCrowdNetClassifier(MaMLClassifier):
         ap_outlier_terms: torch.tensor of shape (n_samples, n_annotators, n_classes) or None
             This is an optional parameter, which is only relevant if `regularization="coin-net"` [3].
         lmbda : non-negative float, optional (default=0.01)
-            Regularization term penalizing the sums of diagonals of annotators' confusion matrices.
+            Regularization term penalizing confusion matrices.
+        mu : non-negative float, optional (default=0.01)
+            Regularization term penalizing instance-dependent outliers. Only relevant for "coin-net".
+        p : non-negative float in (0, 1], optional (default=0.4)
+            Norm to compute regularization term for instance-dependent outliers. Only relevant for "coin-net".
         regularization : "trace-reg" or "geo-reg-f" or "geo-reg-w" or "coin-net"
             Defines which regularization for the annotator confusion matrices is applied, either by regularizing the
             traces of the confusion matrices [1], a geometrically motivated regularization [2], or an additional
@@ -244,9 +260,10 @@ class RegCrowdNetClassifier(MaMLClassifier):
         p_annot_log = torch.logsumexp(p_class_log_ext[:, :, None] + p_perf_log_ext, dim=1)
 
         # Incorporate outlier terms into the predicted annotation probabilities.
-        e_outlier = None
+        e_outlier_err = 0
         if regularization == "coin-net":
             e_outlier = ap_outlier_terms - ap_outlier_terms.mean(dim=-1, keepdim=True)
+            e_outlier_err = (((e_outlier ** 2).sum(dim=(1, 2)) + 1e-10)**(0.5 * p)).sum()
             e_outlier = e_outlier.reshape(-1, e_outlier.shape[-1])[is_lbld]
             p_annot = p_annot_log.exp() + e_outlier
             p_annot = p_annot.clamp(min=1e-10, max=1-1e-10)
@@ -269,9 +286,6 @@ class RegCrowdNetClassifier(MaMLClassifier):
                 # Cf. proposed code in the GitHub repository of [2].
                 if torch.isnan(reg_term) or torch.isinf(torch.abs(reg_term)) or reg_term > 100:
                     reg_term = 0
-                if regularization == "coin-net":
-                    err = (e_outlier ** 2).sum((1, 2)) + 1e-10
-                    reg_term = reg_term + ((err ** 0.2).mean())
             elif regularization == "geo-reg-w":
                 p_perf = p_perf_log.exp().swapaxes(1, 2).flatten(start_dim=0, end_dim=1)
                 # Cf. second summand of Eq. (9) in [2].
@@ -281,7 +295,7 @@ class RegCrowdNetClassifier(MaMLClassifier):
                     reg_term = 0
             else:
                 raise ValueError("`regularization` must be in ['trace-reg', 'geo-reg-f', 'geo-reg-w'].")
-            loss += lmbda * reg_term
+            loss += lmbda * reg_term + mu * e_outlier_err
         return loss
 
     @torch.no_grad()

@@ -21,6 +21,7 @@ CLASSIFIER_NAMES = Literal[
     "union_net_a",
     "union_net_b",
     "crowd_layer",
+    "coin_net",
 ]
 ARCHITECTURE_NAMES = Literal["resnet", "tabnet", "dino"]
 
@@ -59,8 +60,10 @@ def maml_net_params(
     classifier_name: CLASSIFIER_NAMES,
     optimizer: Optimizer.__class__,
     n_annotators: int = 0,
+    n_samples: Optional[int] = None,
     annotators: Optional[torch.tensor] = None,
     classifier_specific: Optional[dict] = None,
+    ap_confs: Optional[torch.tensor] = None,
     optimizer_gt_dict: Optional[dict] = None,
     optimizer_ap_dict: Optional[dict] = None,
     lr_scheduler: Optional[LRScheduler.__class__] = None,
@@ -82,10 +85,14 @@ def maml_net_params(
         Defines the class of the optimizer to be used.
     n_annotators : int, optional (default=0)
         Defines the number of annotators.
+    n_samples : int,
+        Defines the number of samples.
     annotators : torch.tensor, optional (default=None)
         Defines a tensor to represent annotators. The representation depends on the specific MAML classifier.
     classifier_specific : dict, optional (default=None)
         Defines a dictionary of parameters, which a specific for the corresponding MAML classifier.
+    ap_confs : torch.tensor of shape (n_annotators, n_classes, n_classes), optional (default=None)
+        Estimated annotator-wise confusion matrices, if available. These will only be used for making predictions.
     optimizer_gt_dict: : dict, optional (default=None)
         Defines the dictionary of parameters for optimizing the GT model.
     optimizer_ap_dict : dict, optional (default=None)
@@ -137,12 +144,16 @@ def maml_net_params(
     # Add parameters specific for the respective multi-annotator classifier.
     if classifier_name in ["aggregate", "madl"]:
         params_dict["n_classes"] = n_classes
-    elif classifier_name == "conal":
+    if classifier_name == "aggregate":
+        params_dict["ap_confs"] = ap_confs
+    if classifier_name == "conal":
         params_dict["n_classes"] = n_classes
         params_dict["annotators"] = annotators
-    elif classifier_name in ["trace_reg", "geo_reg_f", "geo_reg_w", "crowd_ar", "union_net_a", "union_net_b", "crowd_layer"]:
+    if classifier_name in ["trace_reg", "geo_reg_f", "geo_reg_w", "crowd_ar", "union_net_a", "union_net_b", "crowd_layer", "coin_net"]:
         params_dict["n_classes"] = n_classes
         params_dict["n_annotators"] = n_annotators
+    if classifier_name == "coin_net":
+        params_dict["n_samples"] = n_samples
     params_dict["optimizer"] = optimizer
     params_dict["optimizer_gt_dict"] = optimizer_gt_dict
     if classifier_name != "aggregate":

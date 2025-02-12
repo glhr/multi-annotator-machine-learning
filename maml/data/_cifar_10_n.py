@@ -5,14 +5,17 @@ import pandas as pd
 import requests
 
 from PIL import Image
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import (
-    Compose,
-    Normalize,
-    RandomCrop,
-    RandomHorizontalFlip,
     ToTensor,
+    Normalize,
+    Compose,
+    RandomResizedCrop,
+    RandomHorizontalFlip,
+    Resize,
+    CenterCrop,
+    RandomErasing,
 )
 from ._base import MultiAnnotatorDataset, ANNOTATOR_FEATURES, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
@@ -53,6 +56,17 @@ class CIFAR10N(MultiAnnotatorDataset):
     url_side_information = "https://raw.githubusercontent.com/UCSC-REAL/cifar-10-100n/main/"
     side_information_filename = "side_info_cifar10N.csv"
 
+    variants = np.array(
+        [
+            "worst",
+            "rand-a",
+            "rand-b",
+            "rand-c",
+            "full",
+        ],
+        dtype=object,
+    )
+
     def __init__(
         self,
         root: str,
@@ -61,12 +75,16 @@ class CIFAR10N(MultiAnnotatorDataset):
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
-        is_worst: bool = False,
+        variant: str = "worst-1",
+        realistic_split: str = "cv-5-0",
     ):
+        # Determine whether we load the original training subset.
+        is_train = (version == "train" or realistic_split is not None) and version != "test"
+
         # Download data.
         cifar10 = CIFAR10(
             root=root,
-            train=(version == "train"),
+            train=is_train,
             download=download,
         )
         if download:
@@ -80,19 +98,21 @@ class CIFAR10N(MultiAnnotatorDataset):
                     file.write(response.content)
 
         # Set transforms.
-        mean = (0.4914, 0.4822, 0.4465)
-        std = (0.2023, 0.1994, 0.2010)
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
         if transform == "auto" and version == "train":
             self.transform = Compose(
                 [
-                    RandomCrop(32, padding=4),
+                    Resize(232),
+                    RandomResizedCrop(224),
                     RandomHorizontalFlip(),
                     ToTensor(),
+                    RandomErasing(),
                     Normalize(mean, std),
                 ]
             )
         elif transform == "auto" and version in ["valid", "test"]:
-            self.transform = Compose([ToTensor(), Normalize(mean, std)])
+            self.transform = Compose([Resize(232), CenterCrop(224), ToTensor(), Normalize(mean, std)])
         else:
             self.transform = transform
 
@@ -109,7 +129,8 @@ class CIFAR10N(MultiAnnotatorDataset):
 
         # Load and prepare annotations as tensor for `version="train"`.
         self.z = None
-        if version == "train":
+        if is_train:
+            # Load annotations.
             side_information_file = os.path.join(root, CIFAR10N.side_information_filename)
             annotator_ids = pd.read_csv(side_information_file)[["Worker1-id", "Worker2-id", "Worker3-id"]].values
             annotator_ids = np.repeat(annotator_ids, repeats=10, axis=0).astype(int)
@@ -118,34 +139,55 @@ class CIFAR10N(MultiAnnotatorDataset):
             z_random = np.column_stack(
                 (annotations["random_label1"], annotations["random_label2"], annotations["random_label3"])
             )
-            if is_worst:
-                self.n_annotators = 733
-                self.z = torch.full((len(self.x), self.n_annotators), fill_value=-1)
+            if variant == "worst":
+                self.z = torch.full((len(self.x), self.get_n_annotators()), fill_value=-1)
                 z_worse = annotations["worse_label"]
                 worst_indices = np.argmax(z_worse[:, None] == z_random, axis=-1)
                 worst_annotator_ids = annotator_ids[np.arange(len(self.x)), worst_indices]
                 worst_annotator_ids = np.unique(worst_annotator_ids, return_inverse=True)[1]
                 self.z[np.arange(len(self.x)), worst_annotator_ids] = torch.from_numpy(z_worse)
-            else:
-                self.n_annotators = 747
-                self.z = torch.full((len(self.x), self.n_annotators), fill_value=-1)
+            elif variant == "full":
+                self.z = torch.full((len(self.x), self.get_n_annotators()), fill_value=-1)
                 for i in range(z_random.shape[1]):
                     self.z[np.arange(len(self.x)), annotator_ids[:, i]] = torch.from_numpy(z_random[:, i])
+            elif variant.startswith("rand"):
+                col_idx = {'a': 0, 'b': 1, 'c': 2}[variant.split("-")[-1]]
+                self.z = torch.full((len(self.x), self.get_n_annotators()), fill_value=-1)
+                self.z[np.arange(len(self.x)), annotator_ids[:, col_idx]] = torch.from_numpy(z_random[:, col_idx])
+
+            # Optionally, perform split.
+            train_indices = torch.arange(len(self.x))
+            if isinstance(realistic_split, float):
+                train_indices, valid_indices = train_test_split(
+                    train_indices, train_size=realistic_split, random_state=0
+                )
+            elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
+                n_splits = int(realistic_split.split("-")[1])
+                split_idx = int(realistic_split.split("-")[2])
+                k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
+            version_indices = train_indices if version == "train" else valid_indices
+            self.z = self.z[version_indices]
 
         elif version in ["valid", "test"]:
-            valid_indices, test_indices = train_test_split(
-                torch.arange(len(self.x)), train_size=1000, random_state=0, stratify=self.y
-            )
-            version_indices = valid_indices if version == "valid" else test_indices
-            self.x, self.y = self.x[version_indices], self.y[version_indices]
+            version_indices = torch.arange(len(self.x))
+            if realistic_split is None:
+                valid_indices, test_indices = train_test_split(
+                    torch.arange(len(self.x)), train_size=1000, random_state=0, stratify=self.y
+                )
+                version_indices = valid_indices if version == "valid" else test_indices
+
+        # Index filenames and labels according to version.
+        self.x, self.y = self.x[version_indices], self.y[version_indices]
 
         # Load and prepare annotator features as tensor if `annotators` is not `None`.
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
 
         # Print statistics.
+        print(version)
         print(self)
 
     def __len__(self):
@@ -173,7 +215,7 @@ class CIFAR10N(MultiAnnotatorDataset):
         n_annotators : int
             Number of annotators.
         """
-        return self.n_annotators
+        return 747
 
     def get_annotators(self):
         """

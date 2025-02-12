@@ -25,6 +25,8 @@ class AggregateClassifier(MaMLClassifier):
         Pytorch module the GT model's backbone embedding the input samples.
     gt_output : nn.Module
         Pytorch module of the GT model taking the embedding the samples as input to predict class-membership logits.
+    ap_confs : torch.tensor of shape (n_annotators, n_classes, n_classes), optional (default=None)
+        Estimated annotator-wise confusion matrices, if available. These will only be used for making predictions.
     alpha : float, default=0.0
         Determines the parameters of the beta distribution used for sampling the mixup coefficients.
     optimizer : torch.optim.Optimizer.__class__, optional (default=RAdam.__class__)
@@ -44,6 +46,7 @@ class AggregateClassifier(MaMLClassifier):
         n_classes: int,
         gt_embed_x: nn.Module,
         gt_output: nn.Module,
+        ap_confs: Optional[torch.tensor] = None,
         alpha: float = 0.0,
         optimizer: Optional[Optimizer.__class__] = RAdam,
         optimizer_gt_dict: Optional[Dict] = None,
@@ -59,6 +62,7 @@ class AggregateClassifier(MaMLClassifier):
         )
         self.n_classes = n_classes
         self.alpha = alpha
+        self.ap_confs = ap_confs
         self.gt_embed_x = gt_embed_x
         self.gt_output = gt_output
 
@@ -143,7 +147,14 @@ class AggregateClassifier(MaMLClassifier):
         predictions : dict
             A dictionary of predictions fitting the expected structure of `maml.classifiers.MaMLClassifier`.
         """
-        return {"p_class": self.forward(x=batch["x"]).softmax(dim=-1)}
+        predictions = {"p_class": self.forward(x=batch["x"]).softmax(dim=-1)}
+        # TODO: Introduce index option.
+        if self.ap_confs is not None:
+            predictions["p_conf"] = self.ap_confs.to(self.device).unsqueeze(dim=0).expand(len(batch["x"]), -1, -1, -1)
+            prod = predictions["p_class"][:, None, :, None] * predictions["p_conf"]
+            predictions["p_perf"] = prod.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+            predictions["p_annot"] = prod.sum(dim=-2)
+        return predictions
 
     @staticmethod
     def loss(z_agg: torch.tensor, logits_class: torch.tensor):

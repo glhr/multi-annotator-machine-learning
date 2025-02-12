@@ -8,7 +8,9 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Optional, Literal, Callable, Union
 from skactiveml.utils import majority_vote, rand_argmax, compute_vote_vectors
 
-AGGREGATION_METHODS = Optional[Literal["majority-vote", "ground-truth"]]
+from ..utils import dawid_skene_aggregation
+
+AGGREGATION_METHODS = Optional[Literal["majority-vote", "ground-truth", "soft-majority-vote", "selection-frequency", "dawid-skene"]]
 ANNOTATOR_FEATURES = Optional[Literal["one-hot", "index"]]
 TRANSFORMS = Optional[Union[Callable, Literal["auto"]]]
 VERSIONS = Literal["train", "valid", "test"]
@@ -32,7 +34,7 @@ class MultiAnnotatorDataset(Dataset, ABC):
         if z_agg is not None:
             batch_dict["z_agg"] = z_agg
         a = self.get_annotators()
-        if a is not None:
+        if a is not None and z is not None:
             batch_dict["a"] = a
         return batch_dict
 
@@ -190,9 +192,9 @@ class MultiAnnotatorDataset(Dataset, ABC):
             Returns the aggregated annotations, if `aggregation_method is not None`.
         """
         if aggregation_method is None:
-            return None
+            return None, None
         elif aggregation_method == "ground-truth":
-            return y
+            return y, None
         elif aggregation_method == "majority-vote":
             if z.ndim == 3:
                 mask = (z != -1).all(dim=-1, keepdim=True).float()
@@ -202,7 +204,7 @@ class MultiAnnotatorDataset(Dataset, ABC):
                 class_labels = torch.from_numpy(rand_argmax(proba.numpy(), axis=-1, random_state=0))
             else:
                 class_labels = torch.from_numpy(majority_vote(y=z.numpy(), missing_label=-1, random_state=0))
-            return class_labels
+            return class_labels, None
         elif aggregation_method in ["soft-majority-vote", "selection-frequency"]:
             if z.ndim == 3:
                 mask = (z != -1).all(dim=-1, keepdim=True).float()
@@ -213,13 +215,15 @@ class MultiAnnotatorDataset(Dataset, ABC):
                 votes = compute_vote_vectors(y=z.numpy(), missing_label=-1)
                 proba = torch.from_numpy(votes / votes.sum(axis=-1, keepdims=True))
             if aggregation_method == "soft-majority-vote":
-                return proba
+                return proba, None
             else:
                 selection_frequencies, _ = proba.max(dim=-1)
                 class_labels = torch.from_numpy(rand_argmax(proba.numpy(), axis=-1, random_state=0))
                 is_not_selected = selection_frequencies < 0.7
                 class_labels[is_not_selected] = -1
-                return class_labels
+                return class_labels, None
+        elif aggregation_method == "dawid-skene":
+            return dawid_skene_aggregation(z=z, return_confusion_matrix=True)
         else:
             raise ValueError("`aggregation_method` must be in ['majority-vote', 'ground-truth', None].")
 
