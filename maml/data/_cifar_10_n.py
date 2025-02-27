@@ -151,7 +151,7 @@ class CIFAR10N(MultiAnnotatorDataset):
                 for i in range(z_random.shape[1]):
                     self.z[np.arange(len(self.x)), annotator_ids[:, i]] = torch.from_numpy(z_random[:, i])
             elif variant.startswith("rand"):
-                col_idx = {'a': 0, 'b': 1, 'c': 2}[variant.split("-")[-1]]
+                col_idx = {"a": 0, "b": 1, "c": 2}[variant.split("-")[-1]]
                 self.z = torch.full((len(self.x), self.get_n_annotators()), fill_value=-1)
                 self.z[np.arange(len(self.x)), annotator_ids[:, col_idx]] = torch.from_numpy(z_random[:, col_idx])
 
@@ -184,7 +184,9 @@ class CIFAR10N(MultiAnnotatorDataset):
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg, self.ap_confs = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(
+            z=self.z, y=self.y, aggregation_method=aggregation_method
+        )
 
         # Print statistics.
         print(version)

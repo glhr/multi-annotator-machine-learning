@@ -139,7 +139,7 @@ class CIFAR100N(MultiAnnotatorDataset):
             version_indices = torch.arange(len(self.x))
             if realistic_split is None:
                 valid_indices, test_indices = train_test_split(
-                torch.arange(len(self.x)), train_size=1000, random_state=0, stratify=self.y
+                    torch.arange(len(self.x)), train_size=1000, random_state=0, stratify=self.y
                 )
                 version_indices = valid_indices if version == "valid" else test_indices
 
@@ -150,7 +150,9 @@ class CIFAR100N(MultiAnnotatorDataset):
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg, self.ap_confs = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(
+            z=self.z, y=self.y, aggregation_method=aggregation_method
+        )
 
         # Print statistics.
         print(version)

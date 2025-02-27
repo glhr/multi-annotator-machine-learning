@@ -1,30 +1,23 @@
+import torch
 import numpy as np
 import os
 import pandas as pd
-import torch
 
-from PIL import Image
-from torchvision.datasets.utils import download_and_extract_archive
-from torchvision.transforms import (
-    ToTensor,
-    Normalize,
-    Compose,
-    RandomResizedCrop,
-    RandomHorizontalFlip,
-    Resize,
-    CenterCrop,
-    RandomErasing,
-)
+from sklearn.pipeline import Pipeline
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.model_selection import train_test_split, KFold
+from torchvision.datasets.utils import download_and_extract_archive
+
 
 from ._base import MultiAnnotatorDataset, ANNOTATOR_FEATURES, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
 
-class LabelMe(MultiAnnotatorDataset):
-    """LabelMe
+class Reuters(MultiAnnotatorDataset):
+    """Reuters
 
-    The LabelMe [1] dataset features about 2,700 images of 8 classes, which have been annotated by 59 annotators
-    with an accuracy of about 74%.
+    The Reuters [1] dataset features text files of 8 classes, which have been annotated by 38 annotators
+    with an accuracy of about 56%.
 
     Parameters
     ----------
@@ -45,12 +38,14 @@ class LabelMe(MultiAnnotatorDataset):
 
     References
     ----------
-    [1] Rodrigues, F., & Pereira, F. Deep Learning from Crowds. AAAI Conf. Artif. Intell.
+    [1] F. Rodrigues, M. Lourenço, B. Ribeiro and F. C. Pereira, "Learning Supervised Topic Models for Classification
+        and Regression from Crowds," in IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. 39, no.
+        12, pp. 2409-2422, 2017.
     """
 
-    base_folder = "LabelMe"
-    url = "http://fprodrigues.com/deep_LabelMe.tar.gz"
-    filename = "LabelMe.tar.gz"
+    base_folder = "Reuters"
+    url = "http://fprodrigues.com/Reuters.tar.gz"
+    filename = "Reuters.tar.gz"
 
     def __init__(
         self,
@@ -64,26 +59,21 @@ class LabelMe(MultiAnnotatorDataset):
     ):
         # Download data.
         if download:
-            download_and_extract_archive(LabelMe.url, root, filename=LabelMe.filename)
+            download_and_extract_archive(Reuters.url, root, filename=Reuters.filename)
 
         # Check availability of data.
-        is_available = os.path.exists(os.path.join(root, LabelMe.base_folder))
+        is_available = os.path.exists(os.path.join(root, Reuters.base_folder))
         if not is_available:
             raise RuntimeError("Dataset not found. You can use `download=True` to download it.")
 
-        # Load and prepare sample features as tensor.
-        folder = os.path.join(root, LabelMe.base_folder)
-        if version not in ["train", "valid", "test"]:
-            raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
+        # Load samples and class labels.
         file_version = "train" if realistic_split is not None and version == "valid" else version
-        self.filenames = pd.read_csv(os.path.join(folder, f"filenames_{file_version}.txt"), header=None).values.ravel()
-        for f_idx, filename in enumerate(self.filenames):
-            class_directory = filename.split("_")[0]
-            self.filenames[f_idx] = os.path.join(folder, file_version, class_directory, filename)
-
-        # Load and prepare true labels as tensor.
-        self.y = pd.read_csv(os.path.join(folder, f"labels_{file_version}.txt"), header=None).values.ravel()
-        self.y = torch.from_numpy(self.y.astype(np.int64))
+        folder = os.path.join(root, Reuters.base_folder)
+        x_dict = {v: _load_features(os.path.join(folder, f"data_{v}.txt")) for v in ["train", "valid", "test"]}
+        y_dict = {v: _load_labels(os.path.join(folder, f"labels_{v}.txt")) for v in ["train", "valid", "test"]}
+        indices = {v: np.arange(len(y_dict[v]), dtype=int) for v in ["train", "valid", "test"]}
+        self.x = x_dict[file_version]
+        self.y = y_dict[file_version]
 
         # Load and prepare annotations as tensor.
         self.z = None
@@ -93,40 +83,34 @@ class LabelMe(MultiAnnotatorDataset):
             self.z = self.z[:, provided_labels]
             self.z = torch.from_numpy(self.z.astype(np.int64))
 
-            train_indices = np.arange(len(self.filenames))
-            if isinstance(realistic_split, float):
-                train_indices, valid_indices = train_test_split(
-                    train_indices, train_size=realistic_split, random_state=0
-                )
-            elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
-                n_splits = int(realistic_split.split("-")[1])
-                split_idx = int(realistic_split.split("-")[2])
-                k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
-                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
-
-            indices = train_indices if version == "train" else valid_indices
-            self.z = self.z[indices]
-            self.y = self.y[indices]
-            self.filenames = self.filenames[indices]
+        if isinstance(realistic_split, float):
+            indices["train"], indices["valid"] = train_test_split(
+                indices["train"], train_size=realistic_split, random_state=0
+            )
+        elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
+            n_splits = int(realistic_split.split("-")[1])
+            split_idx = int(realistic_split.split("-")[2])
+            k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+            indices["train"], indices["valid"] = list(k_fold.split(indices["train"]))[split_idx]
 
         # Set transforms.
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        if transform == "auto" and version == "train":
-            self.transform = Compose(
+        if transform == "auto":
+            pipeline = Pipeline(
                 [
-                    Resize(232),
-                    RandomResizedCrop(224),
-                    RandomHorizontalFlip(),
-                    ToTensor(),
-                    RandomErasing(),
-                    Normalize(mean, std),
+                    ("vectorizer", DictVectorizer(sparse=True)),
+                    ("tfidf", TfidfTransformer()),
                 ]
             )
-        elif transform == "auto" and version in ["valid", "test"]:
-            self.transform = Compose([Resize(232), CenterCrop(224), ToTensor(), Normalize(mean, std)])
+            pipeline.fit([x_dict["train"][i] for i in indices["train"]])
+            self.x = pipeline.transform(self.x).toarray()
+            self.transform = None
         else:
             self.transform = transform
+
+        # Index final sets.
+        self.z = self.z[indices[version]] if self.z is not None else None
+        self.y = self.y[indices[version]]
+        self.x = torch.from_numpy(self.x[indices[version]]).float()
 
         # Load and prepare annotator features as tensor if `annotators` is not `None`.
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
@@ -165,7 +149,7 @@ class LabelMe(MultiAnnotatorDataset):
         n_annotators : int
             Number of annotators.
         """
-        return 59
+        return 38
 
     def get_annotators(self):
         """
@@ -188,8 +172,7 @@ class LabelMe(MultiAnnotatorDataset):
         sample : torch.tensor
             Sample with the given index.
         """
-        x = Image.open(self.filenames[idx]).convert("RGB")
-        return self.transform(x) if self.transform else x
+        return self.transform(self.x[idx]) if self.transform else self.x[idx]
 
     def get_annotations(self, idx: int):
         """
@@ -232,3 +215,36 @@ class LabelMe(MultiAnnotatorDataset):
             True class label with the given index.
         """
         return self.y[idx] if self.y is not None else None
+
+
+def _load_features(file_path):
+    """Load document features from a text file.
+
+    Each line is expected to be of the form:
+    [M] [term_1]:[count] [term_2]:[count] ... [term_N]:[count]
+    where [M] is the number of unique terms (which we ignore here).
+    """
+    documents = []
+    with open(file_path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            # The first element is the count of unique terms; skip it.
+            term_counts = {}
+            for pair in parts[1:]:
+                term, count = pair.split(":")
+                term_counts[term] = int(count)
+            documents.append(term_counts)
+    return documents
+
+
+def _load_labels(file_path):
+    """Load labels from a text file (one label per line)."""
+    labels = []
+    with open(file_path, "r") as f:
+        for line in f:
+            label = line.strip()
+            if label:
+                labels.append(label)
+    return torch.from_numpy(np.array(labels, dtype=int))

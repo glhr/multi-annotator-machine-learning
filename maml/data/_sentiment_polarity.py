@@ -64,7 +64,7 @@ class SentimentPolarity(MultiAnnotatorDataset):
         if not is_available:
             raise RuntimeError("Dataset not found. You can use `download=True` to download it.")
 
-        # Load and prepare sample features as tensors.
+        # Load and prepare sample features as numpy arrays.
         folder = os.path.join(root, SentimentPolarity.base_folder)
         df_train = pd.read_csv(os.path.join(folder, "polarity_gold_lsa_topics.csv"), header=0)
         df_test = pd.read_csv(os.path.join(folder, "polarity_test_lsa_topics.csv"), header=0)
@@ -133,7 +133,9 @@ class SentimentPolarity(MultiAnnotatorDataset):
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg, self.ap_confs = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(
+            z=self.z, y=self.y, aggregation_method=aggregation_method
+        )
 
         # Print statistics.
         print(f"variant: {version}")

@@ -116,6 +116,8 @@ class CIFAR10H(MultiAnnotatorDataset):
             mean_performances = n_correct / n_labeled
             sorted_annotators = mean_performances.argsort()
             self.z = self.z[:, sorted_annotators[: self.n_annotators]]
+            is_annotated = (self.z != -1).any(dim=-1)
+            self.x, self.y, self.z = self.x[is_annotated], self.y[is_annotated], self.z[is_annotated]
         elif version in ["valid", "test"]:
             valid_indices, test_indices = train_test_split(
                 torch.arange(len(self.x)), train_size=500, random_state=0, stratify=self.y
@@ -127,7 +129,9 @@ class CIFAR10H(MultiAnnotatorDataset):
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
 
         # Aggregate annotations if `aggregation_method` is not `None`.
-        self.z_agg = self.aggregate_annotations(z=self.z, y=self.y, aggregation_method=aggregation_method)
+        self.z_agg, self.ap_confs = self.aggregate_annotations(
+            z=self.z, y=self.y, aggregation_method=aggregation_method
+        )
 
         # Print statistics.
         print(self)

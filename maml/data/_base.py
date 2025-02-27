@@ -10,7 +10,9 @@ from skactiveml.utils import majority_vote, rand_argmax, compute_vote_vectors
 
 from ..utils import dawid_skene_aggregation
 
-AGGREGATION_METHODS = Optional[Literal["majority-vote", "ground-truth", "soft-majority-vote", "selection-frequency", "dawid-skene"]]
+AGGREGATION_METHODS = Optional[
+    Literal["majority-vote", "ground-truth", "soft-majority-vote", "selection-frequency", "dawid-skene"]
+]
 ANNOTATOR_FEATURES = Optional[Literal["one-hot", "index"]]
 TRANSFORMS = Optional[Union[Callable, Literal["auto"]]]
 VERSIONS = Literal["train", "valid", "test"]

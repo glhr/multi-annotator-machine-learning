@@ -7,9 +7,10 @@ import pandas as pd
 
 from hydra.utils import instantiate, get_class, to_absolute_path
 from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.callbacks import RichProgressBar, ModelCheckpoint
+from lightning.pytorch.callbacks import RichProgressBar
 from mlflow import get_experiment_by_name, set_tracking_uri, log_metric, start_run, create_experiment
 from omegaconf.errors import ConfigAttributeError
+from pprint import pprint
 from skactiveml.utils import majority_vote, compute_vote_vectors, rand_argmax
 from torch import set_float32_matmul_precision
 from torch.utils.data import DataLoader
@@ -18,7 +19,8 @@ from torch.utils.data import DataLoader
 sys.path.append("../../")
 warnings.filterwarnings("ignore")
 set_float32_matmul_precision("medium")
-torch.multiprocessing.set_sharing_strategy('file_system')
+torch.multiprocessing.set_sharing_strategy("file_system")
+
 
 # TODO: In case of issues, set the absolute path to the directory of hydra configuration files.
 @hydra.main(config_path="../hydra_configs", config_name="experiment", version_base=None)
@@ -32,8 +34,9 @@ def evaluate(cfg):
     exp = get_experiment_by_name(cfg.experiment_name)
     experiment_id = create_experiment(name=cfg.experiment_name) if exp is None else exp.experiment_id
 
-    print(cfg.data.class_definition._target_)
-    print(cfg.classifier.name)
+    # Print configuration.
+    print("############ CONFIGURATION ############")
+    pprint(dict(cfg))
 
     with start_run(experiment_id=experiment_id):
         # Log configuration.
@@ -106,7 +109,7 @@ def evaluate(cfg):
             batch_size=cfg.data.train_batch_size,
             num_workers=cfg.data.num_workers,
             shuffle=True,
-            drop_last=True
+            drop_last=True,
         )
         dl_valid = DataLoader(dataset=ds_valid, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)
         dl_test = DataLoader(dataset=ds_test, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)
@@ -139,7 +142,6 @@ def evaluate(cfg):
                 normalizer_dict = {}
                 # =================================== Collect data and predictions. ===================================
                 for batch_idx, batch in enumerate(dl):
-
                     # Helper function for loss computation.
                     loss_name_list = ["zero_one_loss", "brier_score", "log_loss"]
 
@@ -149,7 +151,7 @@ def evaluate(cfg):
                             if loss_name == "zero_one_loss":
                                 preds = rand_argmax(probas, axis=-1, random_state=batch_idx)
                                 preds = np.eye(n_classes)[preds]
-                                loss = (1 - np.einsum("ic,ic->i", targets, preds))
+                                loss = 1 - np.einsum("ic,ic->i", targets, preds)
                             elif loss_name == "brier_score":
                                 loss = ((targets - probas) ** 2).sum(axis=-1)
                             elif loss_name == "log_loss":
@@ -196,7 +198,7 @@ def evaluate(cfg):
                         p_dict = {
                             "unif": np.ones_like(z),
                             "perf": pred_dict.get("p_perf", None),
-                            "conf": pred_dict.get("p_conf", None)
+                            "conf": pred_dict.get("p_conf", None),
                         }
                         if p_dict["conf"] is not None:
                             p_dict["conf"] = p_dict["conf"].diagonal(axis1=-2, axis2=-1).mean(axis=-1)
@@ -207,12 +209,7 @@ def evaluate(cfg):
 
                             # Use hard majority votes as targets.
                             agg = f"class_mv_{suffix}"
-                            targets_dict[agg] = majority_vote(
-                                y=z,
-                                w=weights,
-                                missing_label=-1,
-                                random_state=batch_idx
-                            )
+                            targets_dict[agg] = majority_vote(y=z, w=weights, missing_label=-1, random_state=batch_idx)
                             is_mv = z == targets_dict[agg][:, None]
                             targets_dict[agg] = np.eye(n_classes)[targets_dict[agg]]
                             if not is_unif:
@@ -220,12 +217,7 @@ def evaluate(cfg):
 
                             # Use hard majority votes as targets.
                             agg = f"class_smv_{suffix}"
-                            targets_dict[agg] = compute_vote_vectors(
-                                y=z,
-                                w=weights,
-                                missing_label=-1,
-                                classes=classes
-                            )
+                            targets_dict[agg] = compute_vote_vectors(y=z, w=weights, missing_label=-1, classes=classes)
                             targets_dict[agg] = targets_dict[agg] / targets_dict[agg].sum(axis=-1, keepdims=True)
                             if not is_unif:
                                 weights_dict[agg] = (weights * is_labeled).sum(axis=-1) / is_labeled.sum(axis=-1)
