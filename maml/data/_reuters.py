@@ -60,7 +60,7 @@ class Reuters(MultiAnnotatorDataset):
         # Download data.
         if download:
             download_and_extract_archive(Reuters.url, root, filename=Reuters.filename)
-
+    
         # Check availability of data.
         is_available = os.path.exists(os.path.join(root, Reuters.base_folder))
         if not is_available:
@@ -103,6 +103,9 @@ class Reuters(MultiAnnotatorDataset):
             )
             pipeline.fit([x_dict["train"][i] for i in indices["train"]])
             self.x = pipeline.transform(self.x).toarray()
+            x_const = np.zeros((len(self.x), 8884))
+            x_const[:, :self.x.shape[1]] = self.x
+            self.x = x_const
             self.transform = None
         else:
             self.transform = transform
