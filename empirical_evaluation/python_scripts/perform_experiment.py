@@ -46,16 +46,25 @@ def evaluate(cfg):
         seed_everything(cfg.seed, workers=True)
 
         # Load data.
-        ds_train = instantiate(
+        ds_train_cv = instantiate(
             cfg.data.class_definition,
             version="train",
             annotators=cfg.classifier.annotators,
             aggregation_method=cfg.classifier.aggregation_method,
         )
-        ds_valid = instantiate(cfg.data.class_definition, version="valid", annotators=cfg.classifier.annotators)
+        ds_valid_cv = instantiate(cfg.data.class_definition, version="valid", annotators=cfg.classifier.annotators)
+        ds_train_full = instantiate(
+            cfg.data.class_definition,
+            version="train",
+            annotators=cfg.classifier.annotators,
+            aggregation_method=cfg.classifier.aggregation_method,
+            realistic_split=None,
+        )
         if "n_annotations_per_sample" in cfg.data.class_definition:
             cfg.data.class_definition["n_annotations_per_sample"] = -1
-        ds_test = instantiate(cfg.data.class_definition, version="test", annotators=cfg.classifier.annotators)
+        ds_test_full = instantiate(
+            cfg.data.class_definition, version="test", annotators=cfg.classifier.annotators, realistic_split=None
+        )
 
         # Set embedding dimension for AP architectures.
         try:
@@ -68,76 +77,98 @@ def evaluate(cfg):
             lr_scheduler = get_class(cfg.data.lr_scheduler.class_definition)
         else:
             lr_scheduler = None
-        gt_params_dict = cfg.architecture.params if cfg.architecture.params is not None else {}
-        params_dict = maml_net_params(
-            gt_name=cfg.architecture.name,
-            gt_params_dict={"n_classes": ds_train.get_n_classes(), **gt_params_dict},
-            classifier_name=cfg.classifier.name,
-            n_annotators=ds_train.get_n_annotators(),
-            n_samples=len(ds_train),
-            annotators=ds_train.get_annotators(),
-            ap_confs=ds_train.ap_confs,
-            classifier_specific=cfg.classifier.params,
-            optimizer=get_class(cfg.data.optimizer.class_definition),
-            optimizer_gt_dict=cfg.data.optimizer.gt_params,
-            optimizer_ap_dict=cfg.data.optimizer.ap_params,
-            lr_scheduler=lr_scheduler,
-            lr_scheduler_dict=cfg.data.lr_scheduler.params,
-            embed_size=embed_size,
-        )
-        clf = instantiate(cfg.classifier.class_definition, **params_dict)
 
         # If desired, use SSL features.
         if cfg.ssl_model.name is not None:
             ssl_params_dict = cfg.ssl_model.params if cfg.ssl_model.params is not None else {}
-            ssl_model, _, _ = gt_net(cfg.ssl_model.name, {"n_classes": ds_train.get_n_classes(), **ssl_params_dict})
+            ssl_model, _, _ = gt_net(cfg.ssl_model.name, {"n_classes": ds_train_cv.get_n_classes(), **ssl_params_dict})
             ssl_model = ssl_model()
-            ds_train = instantiate(
+            ds_train_cv = instantiate(
                 cfg.data.class_definition,
                 annotators=cfg.classifier.annotators,
-                transform=ds_test.transform if ds_test.transform else "auto",
+                transform=ds_test_full.transform if ds_test_full.transform else "auto",
                 aggregation_method=cfg.classifier.aggregation_method,
             )
+            ds_train_full = instantiate(
+                cfg.data.class_definition,
+                annotators=cfg.classifier.annotators,
+                transform=ds_test_full.transform if ds_test_full.transform else "auto",
+                aggregation_method=cfg.classifier.aggregation_method,
+                realistic_split=None,
+            )
             device = "cuda" if cfg.accelerator == "gpu" else "cpu"
-            ds_train = SSLDatasetWrapper(dataset=ds_train, model=ssl_model, cache=True, device=device)
-            ds_valid = SSLDatasetWrapper(dataset=ds_valid, model=ssl_model, cache=True, device=device)
-            ds_test = SSLDatasetWrapper(dataset=ds_test, model=ssl_model, cache=True, device=device)
+            ds_train_cv = SSLDatasetWrapper(dataset=ds_train_cv, model=ssl_model, cache=True, device=device)
+            ds_train_full = SSLDatasetWrapper(dataset=ds_train_full, model=ssl_model, cache=True, device=device)
+            ds_valid_cv = SSLDatasetWrapper(dataset=ds_valid_cv, model=ssl_model, cache=True, device=device)
+            ds_test_full = SSLDatasetWrapper(dataset=ds_test_full, model=ssl_model, cache=True, device=device)
 
         # Build data loaders.
-        dl_train = DataLoader(
-            dataset=ds_train,
+        dl_train_cv = DataLoader(
+            dataset=ds_train_cv,
             batch_size=cfg.data.train_batch_size,
             num_workers=cfg.data.num_workers,
             shuffle=True,
             drop_last=True,
         )
-        dl_valid = DataLoader(dataset=ds_valid, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)
-        dl_test = DataLoader(dataset=ds_test, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers)
-
-        # Create callbacks for progressbar and checkpointing.
-        bar = RichProgressBar()
-
-        # Train multi-annotator classifier.
-        trainer = Trainer(
-            max_epochs=cfg.data.max_epochs,
-            accelerator=cfg.accelerator,
-            logger=False,
-            callbacks=[bar],
-            enable_checkpointing=False,
-            deterministic="warn",
+        dl_train_full = DataLoader(
+            dataset=ds_train_full,
+            batch_size=cfg.data.train_batch_size,
+            num_workers=cfg.data.num_workers,
+            shuffle=True,
+            drop_last=True,
         )
-        trainer.fit(model=clf, train_dataloaders=dl_train)
+        dl_valid_cv = DataLoader(
+            dataset=ds_valid_cv, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers
+        )
+        dl_test_full = DataLoader(
+            dataset=ds_test_full, batch_size=cfg.data.eval_batch_size, num_workers=cfg.data.num_workers
+        )
+
+        clf_dict = {}
+        for state, dl in zip(["cv", "full"], [dl_train_cv, dl_train_full]):
+            gt_params_dict = cfg.architecture.params if cfg.architecture.params is not None else {}
+            params_dict = maml_net_params(
+                gt_name=cfg.architecture.name,
+                gt_params_dict={"n_classes": dl.dataset.get_n_classes(), **gt_params_dict},
+                classifier_name=cfg.classifier.name,
+                n_annotators=dl.dataset.get_n_annotators(),
+                n_samples=len(dl.dataset),
+                annotators=dl.dataset.get_annotators(),
+                ap_confs=dl.dataset.ap_confs,
+                classifier_specific=cfg.classifier.params,
+                optimizer=get_class(cfg.data.optimizer.class_definition),
+                optimizer_gt_dict=cfg.data.optimizer.gt_params,
+                optimizer_ap_dict=cfg.data.optimizer.ap_params,
+                lr_scheduler=lr_scheduler,
+                lr_scheduler_dict=cfg.data.lr_scheduler.params,
+                embed_size=embed_size,
+            )
+            clf_dict[state] = instantiate(cfg.classifier.class_definition, **params_dict)
+
+            # Create callbacks for progressbar and checkpointing.
+            bar = RichProgressBar()
+
+            # Train multi-annotator classifier.
+            trainer = Trainer(
+                max_epochs=cfg.data.max_epochs,
+                accelerator=cfg.accelerator,
+                logger=False,
+                callbacks=[bar],
+                enable_checkpointing=False,
+                deterministic="warn",
+            )
+            trainer.fit(model=clf_dict[state], train_dataloaders=dl)
 
         # Evaluate multi-annotator classifier after the last epoch.
-        n_classes = ds_train.get_n_classes()
+        n_classes = ds_train_cv.get_n_classes()
         classes = np.arange(n_classes)
-        dl_list = [("valid", dl_valid), ("test", dl_test)]
+        dl_dict = {"cv": [("valid", dl_valid_cv)], "full": [("test", dl_test_full)]}
         device = "cuda" if cfg.accelerator == "gpu" else "cpu"
-        for state, mdl in zip(["last"], [clf]):
+        for state, mdl in clf_dict.items():
             print(f"\n############ {state} ############")
             mdl.to(device)
             mdl.eval()
-            for version, dl in dl_list:
+            for version, dl in dl_dict[state]:
                 eval_scores_dict = {}
                 normalizer_dict = {}
                 # =================================== Collect data and predictions. ===================================

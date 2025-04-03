@@ -42,6 +42,9 @@ class LabelMe(MultiAnnotatorDataset):
         as aggregated annotations.
     transform : "auto" or torch.nn.Module, default="auto"
         Transforms for the samples, where "auto" used pre-defined transforms fitting the respective version.
+    variant :"worst-1" or "worst-2" or "worst-var" or "rand-1" or "rand-2" or "rand-3" or "rand-2" or "rand-var" or\
+            "full"
+        Defines subsets of annotations to reflect different learning scenarios.
 
     References
     ----------
@@ -61,6 +64,7 @@ class LabelMe(MultiAnnotatorDataset):
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
         realistic_split: str = "cv-5-0",
+        variant: str = "full",
     ):
         # Download data.
         if download:
@@ -86,13 +90,15 @@ class LabelMe(MultiAnnotatorDataset):
         self.y = torch.from_numpy(self.y.astype(np.int64))
 
         # Load and prepare annotations as tensor.
-        self.z = None
+        y_true = pd.read_csv(os.path.join(folder, f"labels_train.txt"), header=None).values.ravel()
+        z = pd.read_csv(os.path.join(folder, f"answers.txt"), header=None, sep=" ").values
+        z = LabelMe.mask_annotations(z=z, y_true=y_true, variant=variant, n_variants=2, is_not_annotated=z == -1)
+        provided_labels = np.sum(z != -1, axis=0) > 0
+        z = z[:, provided_labels].astype(np.int64)
+        z = torch.from_numpy(z)
+        self.n_annotators = z.shape[-1]
         if (version == "train" or realistic_split is not None) and version != "test":
-            self.z = pd.read_csv(os.path.join(folder, f"answers.txt"), header=None, sep=" ").values
-            provided_labels = np.sum(self.z != -1, axis=0) > 0
-            self.z = self.z[:, provided_labels]
-            self.z = torch.from_numpy(self.z.astype(np.int64))
-
+            self.z = z
             train_indices = np.arange(len(self.filenames))
             if isinstance(realistic_split, float):
                 train_indices, valid_indices = train_test_split(
@@ -108,6 +114,8 @@ class LabelMe(MultiAnnotatorDataset):
             self.z = self.z[indices]
             self.y = self.y[indices]
             self.filenames = self.filenames[indices]
+        else:
+            self.z = None
 
         # Set transforms.
         mean = (0.485, 0.456, 0.406)
@@ -165,7 +173,7 @@ class LabelMe(MultiAnnotatorDataset):
         n_annotators : int
             Number of annotators.
         """
-        return 59
+        return self.n_annotators
 
     def get_annotators(self):
         """

@@ -49,8 +49,8 @@ class Dopanim(MultiAnnotatorDataset):
         as aggregated annotations.
     transform : "auto" or torch.nn.Module, default="auto"
         Transforms for the samples, where "auto" used pre-defined transforms fitting the respective version.
-    variant :"worst-1" or "worst-2" or "worst-3" or "worst-4" or "worst-v" or "rand-1" or "rand-2" or "rand-3" or
-    "rand-4" or "rand-v" or "full"
+    variant :"worst-1" or "worst-2" or "worst-3" or "worst-4" or "worst-var" or "rand-1" or "rand-2" or "rand-3" or \
+            "rand-4" or "rand-var" or "full"
         Defines subsets of annotations to reflect different learning scenarios.
     annotation_type : "class-labels" or "probabilities", default="class-labels",
         Defines which type of annotations is used.
@@ -112,22 +112,6 @@ class Dopanim(MultiAnnotatorDataset):
         ],
         dtype=object,
     )
-    variants = np.array(
-        [
-            "full",
-            "worst-var",
-            "rand-var",
-            "worst-1",
-            "worst-2",
-            "worst-3",
-            "worst-4",
-            "rand-1",
-            "rand-2",
-            "rand-3",
-            "rand-4",
-        ],
-        dtype=object,
-    )
 
     def __init__(
         self,
@@ -137,7 +121,7 @@ class Dopanim(MultiAnnotatorDataset):
         annotators: Optional[Literal["one-hot", "index", "metadata"]] = None,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
-        variant: str = "worst-1",
+        variant: str = "full",
         annotation_type: Literal["class-labels", "probabilities"] = "class-labels",
         realistic_split: str = "cv-5-0",
     ):
@@ -366,53 +350,14 @@ class Dopanim(MultiAnnotatorDataset):
             raise ValueError(
                 f"`annotation_type` must be in ['class-labels', 'probabilities'], got '{self.annotation_type}' instead."
             )
-        if self.variant in ["worst-1", "worst-2", "worst-3", "worst-4"]:
-            n_annotators_per_sample = int(self.variant.split("-")[-1])
-            is_false = np.full_like(class_labels, fill_value=0.0, dtype=float)
-            is_false += (y_true_train[:, None] != class_labels).astype(float)
-            is_false -= 2 * is_not_annotated.astype(float)
-            is_not_worst = np.full_like(is_false, fill_value=True, dtype=bool)
-            random_floats = np.random.RandomState(n_annotators_per_sample).rand(*is_false.shape)
-            worst_indices = np.argsort(-(is_false + random_floats), axis=-1)[:, :n_annotators_per_sample]
-            for c in range(n_annotators_per_sample):
-                is_not_worst[np.arange(len(is_not_worst)), worst_indices[:, c]] = False
-            z[is_not_worst] = -1
-        elif self.variant in ["rand-1", "rand-2", "rand-3", "rand-4"]:
-            n_annotators_per_sample = int(self.variant.split("-")[-1])
-            is_annotated = (~is_not_annotated).astype(float)
-            is_not_selected = np.full_like(is_annotated, fill_value=True, dtype=bool)
-            random_floats = np.random.RandomState(n_annotators_per_sample + 4).rand(*is_annotated.shape)
-            random_indices = np.argsort(-(is_annotated + random_floats), axis=-1)[:, :n_annotators_per_sample]
-            for c in range(n_annotators_per_sample):
-                is_not_selected[np.arange(len(is_annotated)), random_indices[:, c]] = False
-            z[is_not_selected] = -1
-        elif self.variant in ["rand-var", "worst-var"]:
-            random_state = np.random.RandomState(0)
-            for i in range(len(is_not_annotated)):
-                # Get the indices of ones in the current row
-                annotated_indices = np.where(is_not_annotated[i] == False)[0]
-
-                # Determine the size of the subset to set to zero
-                subset_size = random_state.randint(0, len(annotated_indices))
-
-                # Select worst indices to set to zero
-                if self.variant == "worst-var":
-                    is_false = class_labels[i][annotated_indices] == y_true_train[i]
-                    random_floats = random_state.rand(*is_false.shape)
-                    worst_indices = np.argsort(-(is_false + random_floats), axis=-1)[:subset_size]
-                    indices_to_true = annotated_indices[worst_indices]
-                else:
-                    # Randomly select indices to set to zero
-                    indices_to_true = random_state.choice(annotated_indices, size=subset_size, replace=False)
-
-                # Set the selected indices to zero
-                is_not_annotated[i, indices_to_true] = True
-            z[is_not_annotated] = -1
-        elif self.variant == "full":
-            pass
-        else:
-            raise ValueError(f"`variant` must be in {Dopanim.variants}, got '{self.variant}' instead.")
-        return z
+        return Dopanim.mask_annotations(
+            z=z,
+            y_true=y_true_train,
+            variant=self.variant,
+            n_variants=4,
+            is_not_annotated=is_not_annotated,
+            class_labels=class_labels,
+        )
 
     def load_true_class_labels(self, version: VERSIONS = "train"):
         """

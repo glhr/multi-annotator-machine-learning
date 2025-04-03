@@ -35,6 +35,9 @@ class Reuters(MultiAnnotatorDataset):
         as aggregated annotations.
     transform : "auto" or torch.nn.Module, default="auto"
         Transforms for the samples, where "auto" used pre-defined transforms fitting the respective version.
+    variant :"worst-1" or "worst-2" or "worst-var" or "rand-1" or "rand-2" or "rand-3" or "rand-2" or "rand-var" or\
+            "full"
+        Defines subsets of annotations to reflect different learning scenarios.
 
     References
     ----------
@@ -55,12 +58,13 @@ class Reuters(MultiAnnotatorDataset):
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
+        variant: str = "full",
         realistic_split: str = "cv-5-0",
     ):
         # Download data.
         if download:
             download_and_extract_archive(Reuters.url, root, filename=Reuters.filename)
-    
+
         # Check availability of data.
         is_available = os.path.exists(os.path.join(root, Reuters.base_folder))
         if not is_available:
@@ -69,19 +73,29 @@ class Reuters(MultiAnnotatorDataset):
         # Load samples and class labels.
         file_version = "train" if realistic_split is not None and version == "valid" else version
         folder = os.path.join(root, Reuters.base_folder)
+        z = pd.read_csv(os.path.join(folder, f"answers.txt"), header=None, sep=" ").values.astype(int)
+        at_least_one_label = (z != -1).any(axis=-1)
         x_dict = {v: _load_features(os.path.join(folder, f"data_{v}.txt")) for v in ["train", "valid", "test"]}
+        x_dict["train"] = [x_dict["train"][i] for i, v in enumerate(at_least_one_label) if v]
         y_dict = {v: _load_labels(os.path.join(folder, f"labels_{v}.txt")) for v in ["train", "valid", "test"]}
+        y_dict["train"] = y_dict["train"][torch.from_numpy(at_least_one_label)]
         indices = {v: np.arange(len(y_dict[v]), dtype=int) for v in ["train", "valid", "test"]}
         self.x = x_dict[file_version]
         self.y = y_dict[file_version]
 
         # Load and prepare annotations as tensor.
-        self.z = None
+        z = z[at_least_one_label]
+        z = Reuters.mask_annotations(
+            z=z, y_true=y_dict["train"].numpy(), variant=variant, n_variants=2, is_not_annotated=z == -1
+        )
+        provided_labels = np.sum(z != -1, axis=0) > 0
+        z = z[:, provided_labels]
+        z = torch.from_numpy(z)
+        self.n_annotators = z.shape[-1]
         if (version == "train" or realistic_split is not None) and version != "test":
-            self.z = pd.read_csv(os.path.join(folder, f"answers.txt"), header=None, sep=" ").values
-            provided_labels = np.sum(self.z != -1, axis=0) > 0
-            self.z = self.z[:, provided_labels]
-            self.z = torch.from_numpy(self.z.astype(np.int64))
+            self.z = z
+        else:
+            self.z = None
 
         if isinstance(realistic_split, float):
             indices["train"], indices["valid"] = train_test_split(
@@ -104,7 +118,7 @@ class Reuters(MultiAnnotatorDataset):
             pipeline.fit([x_dict["train"][i] for i in indices["train"]])
             self.x = pipeline.transform(self.x).toarray()
             x_const = np.zeros((len(self.x), 8884))
-            x_const[:, :self.x.shape[1]] = self.x
+            x_const[:, : self.x.shape[1]] = self.x
             self.x = x_const
             self.transform = None
         else:
@@ -152,7 +166,7 @@ class Reuters(MultiAnnotatorDataset):
         n_annotators : int
             Number of annotators.
         """
-        return 38
+        return self.n_annotators
 
     def get_annotators(self):
         """

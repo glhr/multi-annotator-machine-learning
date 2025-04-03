@@ -256,6 +256,64 @@ class MultiAnnotatorDataset(Dataset, ABC):
         else:
             raise ValueError("`annotators` must be in `['index', 'one-hot', None].")
 
+    @staticmethod
+    def mask_annotations(z, y_true, variant, n_variants, is_not_annotated, class_labels=None):
+        worst_variants = [f"worst-{n+1}" for n in range(n_variants)]
+        random_variants = [f"rand-{n+1}" for n in range(n_variants)]
+        var_variants = ["rand-var", "worst-var"]
+        class_labels = z if class_labels is None else class_labels
+        if variant in worst_variants:
+            n_annotators_per_sample = int(variant.split("-")[-1])
+            is_false = np.full_like(class_labels, fill_value=0.0, dtype=float)
+            is_false += (y_true[:, None] != class_labels).astype(float)
+            is_false -= 2 * is_not_annotated.astype(float)
+            is_not_worst = np.full_like(is_false, fill_value=True, dtype=bool)
+            random_floats = np.random.RandomState(n_annotators_per_sample).rand(*is_false.shape)
+            worst_indices = np.argsort(-(is_false + random_floats), axis=-1)[:, :n_annotators_per_sample]
+            for c in range(n_annotators_per_sample):
+                is_not_worst[np.arange(len(is_not_worst)), worst_indices[:, c]] = False
+            z[is_not_worst] = -1
+        elif variant in random_variants:
+            n_annotators_per_sample = int(variant.split("-")[-1])
+            is_annotated = (~is_not_annotated).astype(float)
+            is_not_selected = np.full_like(is_annotated, fill_value=True, dtype=bool)
+            random_floats = np.random.RandomState(n_annotators_per_sample + 4).rand(*is_annotated.shape)
+            random_indices = np.argsort(-(is_annotated + random_floats), axis=-1)[:, :n_annotators_per_sample]
+            for c in range(n_annotators_per_sample):
+                is_not_selected[np.arange(len(is_annotated)), random_indices[:, c]] = False
+            z[is_not_selected] = -1
+        elif variant in var_variants:
+            random_state = np.random.RandomState(0)
+            for i in range(len(is_not_annotated)):
+                if is_not_annotated[i].all():
+                    continue
+                # Get the indices of ones in the current row
+                annotated_indices = np.where(is_not_annotated[i] == False)[0]
+
+                # Determine the size of the subset to set to zero
+                subset_size = random_state.randint(0, len(annotated_indices))
+
+                # Select worst indices to set to zero
+                if variant == "worst-var":
+                    is_false = class_labels[i][annotated_indices] == y_true[i]
+                    random_floats = random_state.rand(*is_false.shape)
+                    worst_indices = np.argsort(-(is_false + random_floats), axis=-1)[:subset_size]
+                    indices_to_true = annotated_indices[worst_indices]
+                else:
+                    # Randomly select indices to set to zero
+                    indices_to_true = random_state.choice(annotated_indices, size=subset_size, replace=False)
+
+                # Set the selected indices to zero
+                is_not_annotated[i, indices_to_true] = True
+            z[is_not_annotated] = -1
+        elif variant == "full":
+            pass
+        else:
+            raise ValueError(
+                f"`variant` must be in {worst_variants + random_variants + var_variants}, got '{variant}' instead."
+            )
+        return z
+
 
 class SSLDatasetWrapper(MultiAnnotatorDataset):
     """SSLDatasetWrapper
@@ -448,3 +506,9 @@ class SSLDatasetWrapper(MultiAnnotatorDataset):
             Aggregated annotation with the given index.
         """
         return self.dataset.get_aggregated_annotation(idx)
+
+    def __getattr__(self, item):
+        if "dataset" in self.__dict__:
+            return getattr(self.dataset, item)
+        else:
+            return getattr(self.dataset, item)

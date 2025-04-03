@@ -34,6 +34,9 @@ class MusicGenres(MultiAnnotatorDataset):
         as aggregated annotations.
     transform : "auto" or torch.nn.Module, default="auto"
         Transforms for the samples, where "auto" used pre-defined transforms fitting the respective version.
+    variant :"worst-1" or "worst-2" or "worst-var" or "rand-1" or "rand-2" or "rand-3" or "rand-2" or "rand-var" or\
+            "full"
+        Defines subsets of annotations to reflect different learning scenarios.
 
     References
     ----------
@@ -54,6 +57,7 @@ class MusicGenres(MultiAnnotatorDataset):
         aggregation_method: AGGREGATION_METHODS = None,
         transform: TRANSFORMS = "auto",
         realistic_split: str = "cv-5-0",
+        variant: str = "full",
     ):
         # Download data.
         if download:
@@ -83,16 +87,16 @@ class MusicGenres(MultiAnnotatorDataset):
                 split_idx = int(realistic_split.split("-")[2])
                 k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
                 train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
-        else:
-            valid_indices, test_indices = train_test_split(
-                np.arange(len(df_test)), train_size=100, random_state=0, stratify=df_test["class"].values
-            )
-            df_valid = df_test
 
         if version == "train":
             df = df_train.iloc[train_indices]
-        elif version in ["valid", "test"]:
-            df = df_valid.iloc[valid_indices] if version == "valid" else df_test.iloc[test_indices]
+            selected_indices = train_indices
+        elif version == "valid":
+            df = df_valid.iloc[valid_indices]
+            selected_indices = valid_indices
+        elif version == "test":
+            df = df_test.iloc[test_indices]
+            selected_indices = test_indices
         else:
             raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
 
@@ -126,22 +130,33 @@ class MusicGenres(MultiAnnotatorDataset):
             missing_label="not-available",
         )
 
-        # Load and prepare annotations as tensor.
-        self.z = None
-        if (version == "train" or realistic_split is not None) and version != "test":
-            df_answers = pd.read_csv(os.path.join(folder, "music_genre_mturk.csv"), header=0)
-            annotator_indices = df_answers["annotator"].unique()
-            self.z = np.full((len(df), self.get_n_annotators()), fill_value="not-available").astype(str)
-            for row_idx, row in df_answers.iterrows():
-                sample_idx = np.where(df["id"].values == row["id"])[0]
-                if len(sample_idx):
-                    annotator_idx = np.where(annotator_indices == row["annotator"])[0]
-                    self.z[sample_idx[0], annotator_idx[0]] = row["class"]
-            self.z = torch.from_numpy(self.le.fit_transform(self.z).astype(np.int64))
-
         # Load and prepare true labels as tensor.
         self.y = df["class"].values.astype(str)
         self.y = torch.from_numpy(self.le.fit_transform(self.y).astype(np.int64))
+
+        # Load and prepare annotations as tensor.
+        df_answers = pd.read_csv(os.path.join(folder, "music_genre_mturk.csv"), header=0)
+        annotator_indices = df_answers["annotator"].unique()
+        z = np.full((len(df_train), 44), fill_value="not-available").astype(str)
+        for row_idx, row in df_answers.iterrows():
+            sample_idx = np.where(df_train["id"].values == row["id"])[0]
+            if len(sample_idx):
+                annotator_idx = np.where(annotator_indices == row["annotator"])[0]
+                z[sample_idx[0], annotator_idx[0]] = row["class"]
+        z = self.le.fit_transform(z).astype(np.int64)
+        y_true = self.le.fit_transform(df_train["class"].values.astype(str))
+        z = MusicGenres.mask_annotations(z=z, y_true=y_true, variant=variant, n_variants=2, is_not_annotated=z == -1)
+        provided_labels = np.sum(z != -1, axis=0) > 0
+        z = z[:, provided_labels]
+        self.n_annotators = z.shape[-1]
+        index_map = {name: idx for idx, name in enumerate(df["id"].values)}
+        indices = [index_map[name] for name in df_train["id"].values if name in index_map]
+        z = z[selected_indices[indices]]
+        z = torch.from_numpy(z)
+        if (version == "train" or realistic_split is not None) and version != "test":
+            self.z = z
+        else:
+            self.z = None
 
         # Load and prepare annotator features as tensor if `annotators` is not `None`.
         self.a = self.prepare_annotator_features(annotators=annotators, n_annotators=self.get_n_annotators())
@@ -180,7 +195,7 @@ class MusicGenres(MultiAnnotatorDataset):
         n_annotators : int
             Number of annotators.
         """
-        return 44
+        return self.n_annotators
 
     def get_annotators(self):
         """
