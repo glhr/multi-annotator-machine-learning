@@ -8,12 +8,13 @@ import pandas as pd
 from hydra.utils import instantiate, get_class, to_absolute_path
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import RichProgressBar
-from mlflow import get_experiment_by_name, set_tracking_uri, log_metric, start_run, create_experiment
+from mlflow import get_experiment_by_name, set_tracking_uri, log_metric, start_run, create_experiment, MlflowException
 from omegaconf.errors import ConfigAttributeError
 from pprint import pprint
 from skactiveml.utils import majority_vote, compute_vote_vectors, rand_argmax
 from torch import set_float32_matmul_precision
 from torch.utils.data import DataLoader
+from time import sleep
 
 # TODO: In case of issues, set the absolute path to the directory of the mult-annotator-machine-learning project.
 sys.path.append("../../")
@@ -32,7 +33,19 @@ def evaluate(cfg):
     # Setup experiment.
     set_tracking_uri(uri=f"file://{to_absolute_path(cfg.mlruns_path)}")
     exp = get_experiment_by_name(cfg.experiment_name)
-    experiment_id = create_experiment(name=cfg.experiment_name) if exp is None else exp.experiment_id
+    try:
+        experiment_id = create_experiment(name=cfg.experiment_name) if exp is None else exp.experiment_id
+    except MlflowException as e:
+        print(e)
+        for i in range(10):
+            sleep(10)
+            exp = get_experiment_by_name(cfg.experiment_name)
+            experiment_id = exp.experiment_id
+            if exp is not None:
+                print("CONTINUE")
+                break
+        if exp is None:
+            print("TERMINATE")
 
     # Print configuration.
     print("############ CONFIGURATION ############")
@@ -98,9 +111,13 @@ def evaluate(cfg):
             )
             device = "cuda" if cfg.accelerator == "gpu" else "cpu"
             ds_train_cv = SSLDatasetWrapper(dataset=ds_train_cv, model=ssl_model, cache=True, device=device)
+            print(f"ds_train_cv: {len(ds_train_cv)}")
             ds_train_full = SSLDatasetWrapper(dataset=ds_train_full, model=ssl_model, cache=True, device=device)
+            print(f"ds_train_full: {len(ds_train_full)}")
             ds_valid_cv = SSLDatasetWrapper(dataset=ds_valid_cv, model=ssl_model, cache=True, device=device)
+            print(f"ds_valid_cv: {len(ds_valid_cv)}")
             ds_test_full = SSLDatasetWrapper(dataset=ds_test_full, model=ssl_model, cache=True, device=device)
+            print(f"ds_test_full: {len(ds_test_full)}")
 
         # Build data loaders.
         dl_train_cv = DataLoader(
