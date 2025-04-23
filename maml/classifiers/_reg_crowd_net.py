@@ -9,57 +9,229 @@ from typing import Optional, Dict, Literal, Union
 from maml.classifiers._base import MaMLClassifier
 
 
-class RegCrowdNetClassifier(MaMLClassifier):
-    """RegCrowdNetClassifier
+class MaskedParameter3D(nn.Module):
+    r"""Sparse learnable tensor :math:`\theta \in \mathbb{R}^{(N, A, C)}`.
 
-    The "regularized crowd network" (RegCrowdNet) [1, 2, 3] jointly learns the underlying ground truth (GT)
-    distribution and the individual confusion matrix as proxy of each annotator's performance. Therefor, a
-    regularization term is added to the loss function that encourages convergence to the true annotator confusion
-    matrix.
+    A compact alternative to a full ``(n_samples, n_annotators, n_classes)``
+    weight tensor where only a subset of *sample–annotator* pairs is
+    trainable.
+
+    The subset is specified via a boolean *mask* of shape
+    ``(n_samples, n_annotators)``.  A ``True`` entry in the mask means that
+    the **entire row of classes** for that *⟨sample, annotator⟩* pair is
+    learnable, while ``False`` rows are treated as constant zeros and are not
+    stored in memory.
+
+    **Memory footprint** grows with ``mask.sum() * n_classes`` instead of the
+    full product ``n_samples * n_annotators * n_classes``.
+
+    Indexing in the *sample* dimension works like plain tensors, e.g.::
+
+        obj[[0, 3]]  # -> (2, n_annotators, n_classes)
+
+    Notes
+    -----
+    * Forward propagation is free because the module exposes its parameters
+      directly; there is no custom ``forward`` method.
+    * All helper logic lives in :py:meth:`_dense_rows` and
+      :py:meth:`__getitem__`.
+    """
+
+    def __init__(self, mask: torch.Tensor, n_classes: int, *, init: str = "zeros"):
+        """Create a sparse 3‑D parameter tensor.
+
+        Parameters
+        ----------
+        mask : torch.Tensor of dtype ``bool``
+            Boolean mask ``(n_samples, n_annotators)`` that selects the
+            trainable *⟨sample, annotator⟩* pairs.
+        n_classes : int
+            Number of classes :math:`C` (width of each stored row).
+        init : {'zeros', 'normal', 'uniform'}, default ``'zeros'``
+            Initialisation strategy for the compact parameter block.
+
+            * ``'zeros'`` – all weights are initialised to ``0``.
+            * ``'normal'`` – samples from :math:`\mathcal{N}(0, 0.02)`.
+            * ``'uniform'`` – samples from :math:`\mathcal{U}(-0.05, 0.05)`.
+
+        Raises
+        ------
+        TypeError
+            If *mask* is not a boolean tensor.
+        ValueError
+            If *init* is not one of the supported strategies.
+        """
+        super().__init__()
+
+        if mask.dtype is not torch.bool:
+            raise TypeError("mask must be a bool tensor")
+
+        self.n_classes = int(n_classes)
+
+
+        # (n_samples, n_annotators)  →  flat index or −1 sentinel
+        index_mat = torch.full(mask.shape, -1, dtype=torch.long)
+        true_pos = mask.nonzero(as_tuple=False)  # (K, 2)
+        index_mat[true_pos[:, 0], true_pos[:, 1]] = torch.arange(
+            true_pos.size(0), dtype=torch.long
+        )
+        self.register_buffer("index_mat", index_mat)
+
+        # compact learnable block
+        n_params = true_pos.size(0)
+        param = torch.empty(n_params, n_classes)  # (K, C)
+
+        if init == "zeros":
+            nn.init.zeros_(param)
+        elif init == "normal":
+            nn.init.normal_(param, 0.0, 0.02)
+        elif init == "uniform":
+            nn.init.uniform_(param, -0.05, 0.05)
+        else:
+            raise ValueError(f"unknown init '{init}'")
+
+        self.param = nn.Parameter(param)  # learnable
+
+    def _dense_rows(self, sample_idx: torch.Tensor) -> torch.Tensor:
+        """Return a dense slice for *sample_idx*.
+
+        Parameters
+        ----------
+        sample_idx : 1‑D ``LongTensor``
+            Indices along the *sample* dimension.
+
+        Returns
+        -------
+        torch.Tensor
+            Dense tensor of shape ``(len(sample_idx), n_annotators, n_classes)``
+            that contains the requested samples.  Non‑learnable rows are
+            zeros; learnable rows are gathered from the compact store.
+        """
+        idx = self.index_mat[sample_idx]
+        out = torch.zeros(
+            (*idx.shape, self.n_classes),
+            dtype=self.param.dtype,
+            device=self.param.device,
+        )  # (S, A, C)
+
+        valid = idx >= 0  # bool mask of stored rows
+        if valid.any():
+            flat = idx[valid]  # (nnz,)
+            out[valid] = self.param[flat]  # broadcast row vector
+        return out
+
+    def __getitem__(self, item):
+        """Index in the *sample* dimension.
+
+        Parameters
+        ----------
+        item : int | list[int] | torch.LongTensor | slice
+            Selection of samples.
+
+        Returns
+        -------
+        torch.Tensor
+            * If *item* is an ``int``: returns a tensor of shape
+              ``(n_annotators, n_classes)``.
+            * Otherwise: returns ``(len(item), n_annotators, n_classes)``.
+
+        Examples
+        --------
+        >>> w[3]               # single sample → (A, C)
+        >>> w[[0, 2, 4]]       # fancy indexing → (3, A, C)
+        >>> w[1:5]             # slice → (4, A, C)
+        """
+        if isinstance(item, slice):
+            item = torch.arange(
+                *item.indices(self.index_mat.size(0)),
+                dtype=torch.long,
+                device=self.index_mat.device,
+            )
+        elif isinstance(item, int):
+            return self._dense_rows(
+                torch.tensor([item], device=self.index_mat.device)
+            )[0]  # drop batch dim
+        elif isinstance(item, (list, tuple)):
+            item = torch.as_tensor(item, dtype=torch.long, device=self.index_mat.device)
+
+        return self._dense_rows(item)
+
+    def extra_repr(self) -> str:
+        """Human‑readable string for ``print(module)``.
+
+        Returns
+        -------
+        str
+            Formatted description *'sparse_shape=(N, A, C), nnz_elements=K*C'*.
+        """
+        n_samples, n_ann = self.index_mat.shape
+        nnz = self.param.numel()
+        return (
+            f"sparse_shape=({n_samples}, {n_ann}, {self.n_classes}), "
+            f"nnz_elements={nnz}"
+        )
+
+
+class RegCrowdNetClassifier(MaMLClassifier):
+    """
+    Regularized crowd network classifier that jointly learns ground‑truth label distributions and per‑annotator
+    confusion matrices [1–3].
+
+    This model extends a base MaMLClassifier by introducing a penalty term on each annotator’s confusion matrix, either
+    via trace‑regularization or a geometry‑inspired penalty—to encourage the learned matrices to converge to the true
+    noise patterns. Optionally, an instance‑dependent outlier penalty (“coin‑net”) can be applied.
 
     Parameters
     ----------
     n_classes : int
-        Number of classes.
+        Number of target classes, C.
     n_annotators : int
-        Number of annotators.
-    gt_embed_x : nn.Module
-        Pytorch module the GT model' backbone embedding the input samples.
-    gt_output : nn.Module
-        Pytorch module of the GT model taking the embedding the samples as input to predict class-membership logits.
-    lmbda : non-negative float, optional (default=0.01)
-        Regularization term penalizing confusion matrices.
-    mu : non-negative float, optional (default=0.01)
-        Regularization term penalizing instance-dependent outliers. Only relevant for "coin-net".
-    p : non-negative float in (0, 1], optional (default=0.4)
-        Norm to compute regularization term for instance-dependent outliers. Only relevant for "coin-net".
-    regularization : "trace-reg" or "geo-reg-f" or "geo-reg-w"
-        Defines which regularization for the annotator confusion matrices is applied, either by regularizing the traces
-        of the confusion matrices [1] or a geometrically motivated regularization [2].
-    optimizer : torch.optim.Optimizer.__class__, optional (default=RAdam.__class__)
-        Optimizer class responsible for optimizing the GT and AP parameters. If `None`, the `RAdam` optimizer is used
-        by default.
-    optimizer_gt_dict : dict, optional (default=None)
-        Parameters passed to `optimizer` for the GT model.
-    optimizer_ap_dict : dict, optional (default=None)
-        Parameters passed to `optimizer` for the AP model.
-    lr_scheduler : torch.optim.lr_scheduler.LRScheduler.__class__, optional (default=None)
-        Learning rate scheduler responsible for optimizing the GT and AP parameters. If `None`, no learning rate
-        scheduler is used by default.
-    lr_scheduler_dict : dict, optional (default=None)
-        Parameters passed to `lr_scheduler`.
+        Number of distinct annotators, A.
+    gt_embed_x : torch.nn.Module
+        Backbone embedding network for the ground‑truth model. Maps raw inputs
+        to a feature embedding.
+    gt_output : torch.nn.Module
+        Head network for the ground‑truth model. Maps the embedding to
+        class‑membership logits.
+    n_samples : int, optional (default=-1)
+        Total number of training samples, N. Only required if using
+        instance‑dependent regularization; set to –1 to infer dynamically.
+    lmbda : float >= 0, optional (default=0.01)
+        Regularization weight on annotator confusion matrices.
+    mu : float >= 0, optional (default=0.01)
+        Instance‑outlier penalty weight (only used with “coin‑net” mode).
+    p : float in (0, 1], optional (default=0.4)
+        p‑norm exponent for the instance‑outlier penalty (coin‑net only).
+    regularization : {'trace-reg', 'geo-reg-f', 'geo-reg-w', 'coin-net'}, optional
+        Choice of confusion‑matrix regularizer:
+        - 'trace-reg': trace penalty on each matrix [1]
+        - 'geo-reg-f': Frobenius‑geodesic penalty [2]
+        - 'geo-reg-w': Wasserstein‑geodesic penalty [2]
+        - 'coin-net': Frobenius‑geodesic penalty with instance-dependent outliers [3]
+    annotation_mask : torch.Tensor of shape (N, A), optional
+        Boolean mask indicating which ⟨sample, annotator⟩ pairs are observed. Missing entries are ignored during loss
+        computation (coin‑net only).
+    optimizer : torch.optim.Optimizer class, optional
+        Optimizer for both GT and annotator parameters (default: RAdam).
+    optimizer_gt_dict : dict, optional
+        Keyword arguments passed to `optimizer` for the GT model.
+    optimizer_ap_dict : dict, optional
+        Keyword arguments passed to `optimizer` for the annotator parameters.
+    lr_scheduler : torch.optim.lr_scheduler._LRScheduler class, optional
+        Learning‑rate scheduler for both GT and annotator optimizers.
+    lr_scheduler_dict : dict, optional
+        Keyword arguments passed to `lr_scheduler`.
 
     References
     ----------
-    [1] Tanno, Ryutaro, Ardavan Saeedi, Swami Sankaranarayanan, Daniel C. Alexander, and Nathan Silberman.
-        "Learning from noisy labels by regularized estimation of annotator confusion." IEEE/CVF Conf. Comput. Vis.
-         Pattern Recognit., pp. 11244-11253. 2019.
-    [2] Ibrahim, Shahana, Tri Nguyen, and Xiao Fu. "Deep Learning From Crowdsourced Labels: Coupled Cross-Entropy
-        Minimization, Identifiability, and Regularization." Int. Conf. Learn. Represent. 2023.
-    [3] Tri Nguyen, Ibrahim, Shahana, and Xiao Fu. "Noisy Label Learning with Instance-Dependent Outliers:
-        Identifiability via Crowd Wisdom." Adv. Neural Inf. Process. Syst. 2024.
+    [1] Tanno et al., “Learning from noisy labels by regularized estimation
+        of annotator confusion,” CVPR 2019.
+    [2] Ibrahim et al., “Deep Learning From Crowdsourced Labels: Coupled
+        Cross‑Entropy Minimization, Identifiability, and Regularization,”
+        ICLR 2023.
+    [3] Nguyen et al., “Noisy Label Learning with Instance‑Dependent
+        Outliers: Identifiability via Crowd Wisdom,” NeurIPS 2024.
     """
-
     def __init__(
         self,
         n_classes: int,
@@ -71,6 +243,7 @@ class RegCrowdNetClassifier(MaMLClassifier):
         mu: float = 0.01,
         p: float = 0.4,
         regularization: Literal["trace-reg", "geo-reg-f", "geo-reg-w"] = "trace-reg",
+        annotation_mask: Optional[torch.Tensor] = None,
         optimizer: Optional[Optimizer.__class__] = RAdam,
         optimizer_gt_dict: Optional[dict] = None,
         optimizer_ap_dict: Optional[dict] = None,
@@ -106,7 +279,9 @@ class RegCrowdNetClassifier(MaMLClassifier):
         self.ap_outlier_terms = None
         if regularization == "coin-net":
             # Cf. Appendix G.1 in [3] for proposed initialization.
-            self.ap_outlier_terms = nn.Parameter(torch.zeros((self.n_samples, self.n_annotators, self.n_classes)))
+            if annotation_mask is None:
+                annotation_mask = torch.full((self.n_samples, self.n_annotators, self.n_classes), fill_value=True)
+            self.ap_outlier_terms = MaskedParameter3D(mask=annotation_mask.bool(), n_classes=self.n_classes)
 
         self.save_hyperparameters(logger=False)
 

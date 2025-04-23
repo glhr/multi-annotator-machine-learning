@@ -64,6 +64,7 @@ def maml_net_params(
     annotators: Optional[torch.tensor] = None,
     classifier_specific: Optional[dict] = None,
     ap_confs: Optional[torch.tensor] = None,
+    annotation_mask: Optional[torch.tensor] = None,
     optimizer_gt_dict: Optional[dict] = None,
     optimizer_ap_dict: Optional[dict] = None,
     lr_scheduler: Optional[LRScheduler.__class__] = None,
@@ -154,6 +155,7 @@ def maml_net_params(
         params_dict["n_annotators"] = n_annotators
     if classifier_name == "coin_net":
         params_dict["n_samples"] = n_samples
+        params_dict["annotation_mask"] = annotation_mask
     params_dict["optimizer"] = optimizer
     params_dict["optimizer_gt_dict"] = optimizer_gt_dict
     if classifier_name != "aggregate":

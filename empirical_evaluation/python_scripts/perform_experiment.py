@@ -111,13 +111,9 @@ def evaluate(cfg):
             )
             device = "cuda" if cfg.accelerator == "gpu" else "cpu"
             ds_train_cv = SSLDatasetWrapper(dataset=ds_train_cv, model=ssl_model, cache=True, device=device)
-            print(f"ds_train_cv: {len(ds_train_cv)}")
             ds_train_full = SSLDatasetWrapper(dataset=ds_train_full, model=ssl_model, cache=True, device=device)
-            print(f"ds_train_full: {len(ds_train_full)}")
             ds_valid_cv = SSLDatasetWrapper(dataset=ds_valid_cv, model=ssl_model, cache=True, device=device)
-            print(f"ds_valid_cv: {len(ds_valid_cv)}")
             ds_test_full = SSLDatasetWrapper(dataset=ds_test_full, model=ssl_model, cache=True, device=device)
-            print(f"ds_test_full: {len(ds_test_full)}")
 
         # Build data loaders.
         dl_train_cv = DataLoader(
@@ -152,6 +148,7 @@ def evaluate(cfg):
                 n_samples=len(dl.dataset),
                 annotators=dl.dataset.get_annotators(),
                 ap_confs=dl.dataset.ap_confs,
+                annotation_mask=dl.dataset.get_annotation_matrix() != -1,
                 classifier_specific=cfg.classifier.params,
                 optimizer=get_class(cfg.data.optimizer.class_definition),
                 optimizer_gt_dict=cfg.data.optimizer.gt_params,

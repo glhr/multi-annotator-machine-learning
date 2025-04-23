@@ -133,6 +133,28 @@ class MultiAnnotatorDataset(Dataset, ABC):
         """
         return None
 
+    def get_annotation_matrix(self):
+        """
+        Compute the annotation matrix by stacking annotation vectors for all samples.
+
+        This method retrieves annotations for each sample in the dataset using `get_annotations`
+        and stacks them into a single 2D tensor. If any call to `get_annotations` returns `None`,
+        the method will return `None` immediately.
+
+        Returns
+        -------
+        z : torch.Tensor or None
+            A tensor of shape (n_samples, n_features) containing annotations for all samples,
+            or `None` if any sample has no annotations.
+        """
+        z = []
+        for i in range(len(self)):
+            z_i = self.get_annotations(i)
+            if z_i is None:
+                return None
+            z.append(z_i)
+        return torch.vstack(z)
+
     def __str__(self):
         """
         Provides a summary of dataset statistics.
@@ -258,6 +280,50 @@ class MultiAnnotatorDataset(Dataset, ABC):
 
     @staticmethod
     def mask_annotations(z, y_true, variant, n_variants, is_not_annotated, class_labels=None):
+        """
+        Mask annotation entries in a 2D array according to a chosen selection variant.
+
+        This method takes an annotation matrix `z` and applies a masking strategy that
+        sets selected entries to -1. It supports multiple variants for selecting
+        which annotators to keep or mask:
+
+        - "worst-k": Keep only the k annotators whose labels disagree most with
+          the true label `y_true` (using random tie-breaking). All other entries are
+          masked.
+        - "rand-k": Keep only k randomly chosen annotated entries per sample.
+        - "worst-var": Randomly choose a subset of annotated entries of random size
+          and keep the ones that most disagree with `y_true`.
+        - "rand-var": Randomly choose a subset of annotated entries of random size
+          to keep.
+        - "full": No masking; returns `z` unchanged.
+
+        Parameters
+        ----------
+        z : ndarray of shape (n_samples, n_annotators)
+            Annotation matrix where each element is a label or annotation value.
+        y_true : ndarray of shape (n_samples,)
+            Ground-truth labels for each sample.
+        variant : {'worst-1', ..., f'worst-{n_variants}',
+                   'rand-1', ..., f'rand-{n_variants}',
+                   'worst-var', 'rand-var', 'full'}
+            Selection variant determining which subset of annotators to keep.
+        n_variants : int
+            Maximum k for the "worst-k" and "rand-k" variants.
+        is_not_annotated : ndarray of bool, shape (n_samples, n_annotators)
+            Boolean mask indicating missing annotations (True where missing).
+        class_labels : ndarray, shape (n_annotators,), optional
+            Array of possible class labels. If None, defaults to unique values of `z`.
+
+        Returns
+        -------
+        z : ndarray of shape (n_samples, n_annotators)
+            The masked annotation matrix with entries set to -1 for masked positions.
+
+        Raises
+        ------
+        ValueError
+            If `variant` is not among the supported options.
+        """
         worst_variants = [f"worst-{n+1}" for n in range(n_variants)]
         random_variants = [f"rand-{n+1}" for n in range(n_variants)]
         var_variants = ["rand-var", "worst-var"]
