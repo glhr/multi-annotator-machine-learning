@@ -231,6 +231,7 @@ def evaluate(cfg):
                     z = batch.get("z", None)
                     if z is not None:
                         # Mask out missing annotations.
+                        n_annotators = z.shape[-1]
                         is_labeled = z != -1
                         z_ravel = z.ravel()
                         is_labeled_ravel = is_labeled.ravel()
@@ -239,48 +240,60 @@ def evaluate(cfg):
                         if p_annot is not None:
                             p_annot = p_annot.reshape((-1, n_classes))[is_labeled_ravel]
 
-                        # Get annotator's performances as weights.
-                        p_dict = {
-                            "unif": np.ones_like(z),
-                            "perf": pred_dict.get("p_perf", None),
-                            "conf": pred_dict.get("p_conf", None),
-                        }
-                        if p_dict["conf"] is not None:
-                            p_dict["conf"] = p_dict["conf"].diagonal(axis1=-2, axis2=-1).mean(axis=-1)
-                        for suffix, weights in p_dict.items():
-                            if weights is None:
-                                continue
-                            is_unif = suffix == "unif"
+                        # Storage for estimated probabilities.
+                        p_dict = {}
 
-                            # Use hard majority votes as targets.
-                            agg = f"class_mv_{suffix}"
-                            targets_dict[agg] = majority_vote(y=z, w=weights, missing_label=-1, random_state=batch_idx)
-                            is_mv = z == targets_dict[agg][:, None]
-                            targets_dict[agg] = np.eye(n_classes)[targets_dict[agg]]
-                            if not is_unif:
-                                weights_dict[agg] = (weights * is_mv).sum(axis=-1) / is_mv.sum(axis=-1)
+                        # (Soft) majority voting and noisy annotations with uniform weights.
+                        p_unif = compute_vote_vectors(y=z, missing_label=-1, classes=classes)
+                        p_unif /= p_unif.sum(axis=-1, keepdims=True)
+                        p_dict["unif"] = p_unif
 
-                            # Use hard majority votes as targets.
-                            agg = f"class_smv_{suffix}"
-                            targets_dict[agg] = compute_vote_vectors(y=z, w=weights, missing_label=-1, classes=classes)
-                            targets_dict[agg] = targets_dict[agg] / targets_dict[agg].sum(axis=-1, keepdims=True)
-                            if not is_unif:
-                                weights_dict[agg] = (weights * is_labeled).sum(axis=-1) / is_labeled.sum(axis=-1)
+                        # Get annotator's performances.
+                        p_perf = pred_dict.get("p_perf", None)
+                        if p_perf is not None:
+                            # Compute probabilities with log-odds as weights.
+                            p_perf_clipped = np.clip(p_perf, 1e-3, 1 - 1e-3)
+                            log_odds = np.log((n_classes - 1) * p_perf_clipped / (1 - p_perf_clipped))
+                            scores = compute_vote_vectors(y=z, classes=classes, w=log_odds, missing_label=-1)
+                            scores_stable = scores - scores.max(axis=1, keepdims=True)
+                            for temp_scaling in [1, 1.5, 2, 2.5, 3]:
+                                exp_scores = np.exp(scores_stable / temp_scaling)
+                                p_dict[f"log_odds_{temp_scaling}"] = exp_scores / exp_scores.sum(axis=1, keepdims=True)
 
-                            # Use noisy annotations as targets.
+                            # Compute probabilities with linear weights.
+                            scores = compute_vote_vectors(y=z, w=p_perf, missing_label=-1, classes=classes)
+                            p_dict["linear"] = scores / scores.sum(axis=-1, keepdims=True)
+
+                        # Compute estimated targets.
+                        for p_type, p_est in p_dict.items():
+                            y_est = rand_argmax(p_est, axis=-1, random_state=batch_idx)
+                            targets_dict[f"class_mv_{p_type}"] = np.eye(n_classes)[y_est]
+                            weights_dict[f"class_mv_{p_type}"] = p_est.max(axis=-1)
+                            targets_dict[f"class_smv_{p_type}"] = p_est
                             if p_annot is not None:
-                                agg = f"annot_{suffix}"
-                                targets_dict[agg] = z_ravel_one_hot
-                                if not is_unif:
-                                    weights_dict[agg] = weights.ravel()[is_labeled_ravel]
+                                p_est_ravel = p_est.repeat(repeats=n_annotators, axis=0)[is_labeled_ravel]
+                                targets_dict[f"annot_{p_type}"] = z_ravel_one_hot
+                                weights_dict[f"annot_{p_type}"] = (z_ravel_one_hot * p_est_ravel).sum(axis=-1)
 
                     # Evaluate predictions.
                     for k, v in targets_dict.items():
+                        # Compute scores without sample weights.
                         probas = p_class if k.startswith("class") else p_annot
                         compute_losses(probas=probas, targets=v, target_name=k)
+                        if k.startswith("class") and version == "valid":
+                            compute_losses(probas=v, targets=targets_dict["class_true"], target_name=f"{k}_quality")
+
+                        # Compute scores with samples weights.
                         w = weights_dict.get(k, None)
                         if w is not None:
-                            compute_losses(probas=probas, targets=v, target_name=f"{k}_weights", weights=w)
+                            compute_losses(probas=probas, targets=v, target_name=f"{k}_weighted", weights=w)
+                            if k.startswith("class") and version == "valid":
+                                compute_losses(
+                                    probas=v,
+                                    targets=targets_dict["class_true"],
+                                    target_name=f"{k}_weighted_quality",
+                                    weights=w,
+                                )
 
                 # Normalize evaluation scores.
                 for k, v in eval_scores_dict.items():
