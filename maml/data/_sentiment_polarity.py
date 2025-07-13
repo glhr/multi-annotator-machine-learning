@@ -1,13 +1,12 @@
 import torch
 import numpy as np
 import os
-import pandas as pd
+#import pandas as pd
 
 from skactiveml.utils import ExtLabelEncoder
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, KFold
 from torchvision.datasets.utils import download_and_extract_archive
-
+#from sentence_transformers import SentenceTransformer
 
 from ._base import MultiAnnotatorDataset, ANNOTATOR_FEATURES, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
@@ -55,9 +54,9 @@ class SentimentPolarity(MultiAnnotatorDataset):
         annotators: ANNOTATOR_FEATURES = None,
         download: bool = False,
         aggregation_method: AGGREGATION_METHODS = None,
-        transform: TRANSFORMS = "auto",
+        transform: TRANSFORMS = None,
         realistic_split: str = "cv-5-0",
-        variant: str = "full",
+        variant: str = "worst-1",
     ):
         # Download data.
         if download:
@@ -68,87 +67,64 @@ class SentimentPolarity(MultiAnnotatorDataset):
         if not is_available:
             raise RuntimeError("Dataset not found. You can use `download=True` to download it.")
 
+        # Define label encoder and transforms.
+        self.le = ExtLabelEncoder(classes=["pos", "neg"], missing_label="not-available")
+        self.transform = transform
+
         # Load and prepare sample features as numpy arrays.
         folder = os.path.join(root, SentimentPolarity.base_folder)
-        df_train = pd.read_csv(os.path.join(folder, "polarity_gold_lsa_topics.csv"), header=0)
-        df_test = pd.read_csv(os.path.join(folder, "polarity_test_lsa_topics.csv"), header=0)
+        #df = pd.read_csv(os.path.join(folder, "mturk_answers.csv"), header=0)
+        #z_df = df.pivot(index='Input.id', columns='WorkerId', values='Answer.sent')
+        #z_df = z_df.fillna('not-available')
+        #z = z_df.to_numpy(str)
+        #df_samples = df.drop_duplicates(subset=['Input.id']).set_index('Input.id').sort_index()
+        #x = df_samples.loc[z_df.index, 'Input.original_sentence'].to_numpy(str)
+        #y = df_samples.loc[z_df.index, 'Input.true_sent'].to_numpy(str)
+        #model = SentenceTransformer('all-mpnet-base-v2').encode
+        #x_list = x.tolist()
+        #print(len(x))
+        #os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        #x = model(x_list, show_progress_bar=True)
+        #print(x.shape)
+        #y = self.le.fit_transform(y)
+        #z = self.le.fit_transform(z)
+        #np.savez(os.path.join(folder, "spc-all-mpnet-base-v2.npz"), x=x, y=y, z=z)
+        #print(folder)
+        data = np.load(os.path.join(folder, "spc-all-mpnet-base-v2.npz"))
+        x, y, z = data["x"], data["y"], data["z"]
+        print(np.unique(y, return_counts=True))
+
+        # Filter annotations and define number of annotators.
+        z = SentimentPolarity.mask_annotations(
+            z=z, y_true=y, variant=variant, n_variants=2, is_not_annotated=z == -1
+        )
+        provided_labels = np.sum(z != -1, axis=0) > 0
+        z = z[:, provided_labels]
+        self.n_annotators = z.shape[-1]
 
         # Decide for realistic data split or the one with ground truth labels.
-        train_indices = np.arange(len(df_train))
-        test_indices = np.arange(len(df_test))
+        indices = {}
+        indices["train"], indices["test"] = train_test_split(
+            np.arange(len(y)), train_size=3000, random_state=0, shuffle=True, stratify=y,
+        )
         if realistic_split is not None:
-            df_valid = df_train
             if isinstance(realistic_split, float):
-                train_indices, valid_indices = train_test_split(
-                    train_indices, train_size=realistic_split, random_state=0
+                indices["train"], indices["valid"] = train_test_split(
+                    indices["train"], train_size=realistic_split, random_state=0
                 )
             elif isinstance(realistic_split, str) and realistic_split.startswith("cv"):
                 n_splits = int(realistic_split.split("-")[1])
                 split_idx = int(realistic_split.split("-")[2])
                 k_fold = KFold(n_splits=n_splits, shuffle=True, random_state=0)
-                train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
-        else:
-            valid_indices, test_indices = train_test_split(
-                np.arange(len(df_test)), train_size=500, random_state=0, stratify=df_test["class"].values
-            )
-            df_valid = df_test
+                indices["train"], indices["valid"] = list(k_fold.split(indices["train"]))[split_idx]
 
-        if version == "train":
-            df = df_train.iloc[train_indices]
-            selected_indices = train_indices
-        elif version == "valid":
-            df = df_valid.iloc[valid_indices]
-            selected_indices = valid_indices
-        elif version == "test":
-            df = df_test.iloc[test_indices]
-            selected_indices = test_indices
-        else:
+        # Index according to variant.
+        if version not in ["train", "valid", "test"]:
             raise ValueError("`version` must be in `['train', 'valid', 'test']`.")
-
-        sc = None
-        if transform == "auto":
-            sc = StandardScaler().fit(df_train.iloc[train_indices].values[:, 1:-1].astype(np.float32))
-        self.x = df.values[:, 1:-1].astype(np.float32)
-
-        # Set transforms.
-        if isinstance(sc, StandardScaler):
-            self.x = sc.transform(self.x)
-            self.transform = None
-        else:
-            self.transform = transform
-        self.x = torch.from_numpy(self.x)
-
-        # Setup label encoder.
-        self.le = ExtLabelEncoder(classes=["pos", "neg"], missing_label="not-available")
-
-        # Load and prepare true labels as tensor.
-        self.y = df["class"].values.astype(str)
-        self.y = torch.from_numpy(self.le.fit_transform(self.y).astype(np.int64))
-
-        # Load and prepare annotations as tensor.
-        y_true = df_train["class"].values.astype(str)
-        y_true = self.le.fit_transform(y_true).astype(np.int64)
-        df_answers = pd.read_csv(os.path.join(folder, "mturk_answers.csv"), header=0)
-        annotator_indices = df_answers["WorkerId"].unique()
-        z = np.full((len(df_train), 203), fill_value="not-available").astype(str)
-        for row_idx, row in df_answers.iterrows():
-            sample_idx = np.where(df_train["id"].values == row["Input.id"])[0]
-            if len(sample_idx):
-                annotator_idx = np.where(annotator_indices == row["WorkerId"])[0]
-                z[sample_idx[0], annotator_idx[0]] = row["Answer.sent"]
-        z = self.le.fit_transform(z).astype(np.int64)
-        z = SentimentPolarity.mask_annotations(
-            z=z, y_true=y_true, variant=variant, n_variants=2, is_not_annotated=z == -1
-        )
-        provided_labels = np.sum(z != -1, axis=0) > 0
-        z = z[:, provided_labels]
-        self.n_annotators = z.shape[-1]
-        index_map = {name: idx for idx, name in enumerate(df["id"].values)}
-        indices = [index_map[name] for name in df_train["id"].values if name in index_map]
-        z = z[selected_indices[indices]]
-        z = torch.from_numpy(z)
+        self.x = torch.from_numpy(x[indices[version]]).float()
+        self.y = torch.from_numpy(y[indices[version]]).long()
         if (version == "train" or realistic_split is not None) and version != "test":
-            self.z = z
+            self.z =  torch.from_numpy(z[indices[version]])
         else:
             self.z = None
 

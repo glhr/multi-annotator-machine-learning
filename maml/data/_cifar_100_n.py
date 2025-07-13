@@ -135,13 +135,8 @@ class CIFAR100N(MultiAnnotatorDataset):
                 train_indices, valid_indices = list(k_fold.split(train_indices))[split_idx]
             version_indices = train_indices if version == "train" else valid_indices
             self.z = self.z[version_indices]
-        elif version in ["valid", "test"]:
+        elif version == "test":
             version_indices = torch.arange(len(self.x))
-            if realistic_split is None:
-                valid_indices, test_indices = train_test_split(
-                    torch.arange(len(self.x)), train_size=1000, random_state=0, stratify=self.y
-                )
-                version_indices = valid_indices if version == "valid" else test_indices
 
         # Index filenames and labels according to version.
         self.x, self.y = self.x[version_indices], self.y[version_indices]
