@@ -26,6 +26,15 @@ As a prerequisite, we assume that we have a Linux distribution as an operating s
 ```bash
 projectpath$ conda env create -f environment.yml
 ```
+As a fallback in the case of any issues with the previous installation, we also provie a 
+[`requirements.txt`](requirements.txt) file, which lists all manually installed Python packages:
+```bash
+projectpath$ conda create -n crowd-hpo python=3.9
+projectpath$ conda activate crowd-hpo
+projectpath$ pip install -r requirements.txt
+```
+In both cases, keep in mind to adjust the [`torch`](https://pytorch.org/get-started/locally/) related packages
+according to your hardware.
 3. Activate the new environment
 ```bash
 projectpath$ conda activate crowd-hpo
