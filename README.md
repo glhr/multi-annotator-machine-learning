@@ -4,7 +4,7 @@
 <a href="https://hydra.cc/"><img alt="Config: Hydra" src="https://img.shields.io/badge/Config-Hydra-89b8cd"></a>
 <a href="https://arxiv.org/abs/2504.09085"><img alt="crowd-hpo @ arXiv 2025" src="https://img.shields.io/badge/arXiv-crowd--hpo @ arXiv 2025-aqua"></a>
 
-This project provides the codebase associated to the paper
+This project provides the codebase associated with the paper
 > Marek Herde, Lukas Lührs, Denis Huseljic, and Bernhard Sick. crowd-hpo: Realistic Hyperparameter Optimization and
 > Benchmarking for Learning from Crowds with Noisy Labels. arXiv 2025.
 
@@ -20,10 +20,10 @@ This project provides the codebase associated to the paper
 **Goal:** Enable a fairer and more realistic benchmark of learning from crowds approaches by optimizing their hyperparameters with access only to crowd-labeled training and validation data.
 
 ## Setup of Conda Environment :snake:
-As a prerequisite, we assume to have a Linux distribution as operating system. 
+As a prerequisite, we assume that we have a Linux distribution as an operating system. 
 
 1. Download a [`conda`](https://conda.io/projects/conda/en/latest/user-guide/install/index.html) version to be installed on your machine. 
-2. Setup the environment via
+2. Set up the environment via
 ```bash
 projectpath$ conda env create -f environment.yml
 ```
@@ -49,7 +49,7 @@ projectpath$ conda env list
   - [`python_scripts`](empirical_evaluation/python_scripts): collection of scripts to perform experimental evaluation
     - [`perform_experiments.py`](empirical_evaluation/python_scripts/perform_experiments.py): script to execute a single experiment for a given configuration
     - [`write_bash_scripts.py`](empirical_evaluation/python_scripts/write_bash_scripts.py): script to write Bash or Slurm scripts for evaluation
-- [`maml`](maml): Python package for learning from crowds consisting of several sub-packages
+- [`maml`](maml): Python package for learning from crowds, consisting of several sub-packages
     - [`architectures`](maml/architectures): implementations of network architectures for the data classification, crowdworker classification, and crowdworker performance models
     - [`classifiers`](maml/classifiers): implementations of learning from crowds approaches using [`pytorch_lightning`](https://www.pytorchlightning.ai/) modules
     - [`data`](maml/data): implementations of [`pytorch`](https://pytorch.org/) datasets with class labels from noisy crowdworkers
@@ -77,7 +77,7 @@ projectpath$ conda activate crowd-hpo
 projectpath$ cd empirical_evaluation/python_scripts
 projectpath/empirical_evaluation/python_scripts$ python perform_experiment.py data=dopanim data.class_definition.variant="full" classifier=majority_vote seed=0
 ````
-3. Since there are many different experimental configuration including five repetitions with different seeds, you can
+3. Since there are many different experimental configurations, including five repetitions with different seeds, you can
 create Bash scripts by following the instructions in [`write_bash_scripts.py`](empirical_evaluation/python_scripts/write_bash_scripts.py) and then
 execute the following commands
 ```bash
@@ -85,17 +85,20 @@ projectpath$ conda activate crowd-hpo
 projectpath$ cd empirical_evaluation/python_scripts
 projectpath/empirical_evaluation/python_scripts$ python write_bash_scripts.py
 ```
-4. There is a bash script for the hyperparameter search, each dataset variant of the benchmark and use cases. For 
-example, executing the benchmark experiments for the dataset variant `dopanim-full` via SLURM can be done according to
+4. There is a bash script for the HPS, the default data-agnostic HPC, and the default data-specific HPC for each dataset variant of the benchmark. For 
+example, executing the HPS for the dataset variant `dopanim-full` via SLURM can be done according to
 ```bash
 projectpath$ conda activate crowd-hpo
-projectpath$ sbatch path_to_bash_scripts/dopanim_benchmark_full.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part1.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part2.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part3.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part4.sh
 ```
 
 ### Results
-Once, the experiments are completed, their associated results can be loaded via [`mlflow`](https://mlflow.org/). 
-For getting a full presentation of these results, you need to start the Jupyter notebook 
-[`analyze_results.ipynb`](examples/analyze_results.ipynb) and follow its instructions.
+Once all experiments are completed, their associated results can be loaded via [`mlflow`](https://mlflow.org/). 
+To get a full presentation of these results, you need to start the Jupyter notebook 
+[`analyze_results.ipynb`](empirical_evaluation/analyze_results.ipynb) and follow its instructions.
 ```bash
 projectpath$ conda activate crowd-hpo
 projectpath$ cd empirical_evaluation/jupyter_notebooks
