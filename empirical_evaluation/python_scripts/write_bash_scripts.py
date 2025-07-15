@@ -513,14 +513,6 @@ if __name__ == "__main__":
             "ssl_model": "none",
             "variant": "rand-var",
         },
-        # "cifar_100_n": {"seed": 35, "data": "cifar_100_n", "architecture": "dino_head", "ssl_model": "dino_backbone", "variant": None},
-        "image_net_15_n": {
-            "seed": 36,
-            "data": "image_net_15_n",
-            "architecture": "tabnet_image_net_15_n",
-            "ssl_model": "none",
-            "variant": None,
-        },
     }
 
     # ----------------------------------- Define search spaces for hyperparameters. -----------------------------------
@@ -893,15 +885,6 @@ if __name__ == "__main__":
             "data.max_epochs": [5],
             "data.lr_scheduler.params.T_max": [5],
             "architecture.params.dropout_rate": [0.4173331866040826],
-        }
-
-        data_set_dict["image_net_15_n"]["hp_ranges"] = {
-            "data.optimizer.gt_params.lr": [0.0114558483887332],
-            "data.optimizer.gt_params.weight_decay": [4.757782538568605e-06],
-            "data.optimizer.ap_params.lr": [0.0114558483887332],
-            "data.optimizer.ap_params.weight_decay": [0],
-            "data.train_batch_size": [64],
-            "architecture.params.dropout_rate": [0.4353005206212401],
         }
 
     elif experiment_type == "default":
