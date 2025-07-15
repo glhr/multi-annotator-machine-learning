@@ -65,17 +65,24 @@ human crowdworkers.
 ### Experiments 
 The Python script for executing a single experiment is 
 [`perform_experiment.py`](empirical_evaluation/python_scripts/perform_experiment.py) and the corresponding main config file 
-is [`evaluation`](empirical_evaluation/hydra_configs/evaluation.yaml). In this config file, you also need to specify the `mlruns_path` 
+is [`evaluation`](empirical_evaluation/hydra_configs/experiment.yaml). In this config file, you also need to specify the `mlruns_path` 
 defining the path, where the results are to be saved via [`mlflow`](https://mlflow.org/). Further, you have the option
 to select the 'gpu' or 'cpu' as `accelerator`.
-1. Before starting a single experiment or Jupyter notebook, check whether the dataset is already downloaded. 
-For example, if you want to ensure that the dataset `dopanim` is downloaded, update the `download` flag in its config 
-file [`dopanim.yaml`](empirical_evaluation/hydra_configs/data/dopanim.yaml).
+1. Before starting a single experiment or Jupyter notebook, check whether all datasets are already downloaded. 
+For example, if you want to ensure that the dataset `music_genres` is downloaded, update the `download` flag in its config 
+file [`music_genres.yaml`](empirical_evaluation/hydra_configs/data/music_genres.yaml).
 2. An experiment can then be started by executing the following commands
 ```bash
 projectpath$ conda activate crowd-hpo
 projectpath$ cd empirical_evaluation/python_scripts
-projectpath/empirical_evaluation/python_scripts$ python perform_experiment.py data=dopanim data.class_definition.variant="full" classifier=majority_vote seed=0
+projectpath/empirical_evaluation/python_scripts$ python perform_experiment.py \
+    data=music_genres \
+    data.class_definition.variant="full" \
+    classifier=coin_net \
+    seed=0 \
+    data.class_definition.download=True \
+    architecture=tabnet_music_genres \
+    ssl_model=none
 ````
 3. Since there are many different experimental configurations, including five repetitions with different seeds, you can
 create Bash scripts by following the instructions in [`write_bash_scripts.py`](empirical_evaluation/python_scripts/write_bash_scripts.py) and then
@@ -86,19 +93,19 @@ projectpath$ cd empirical_evaluation/python_scripts
 projectpath/empirical_evaluation/python_scripts$ python write_bash_scripts.py
 ```
 4. There is a bash script for the HPS, the default data-agnostic HPC, and the default data-specific HPC for each dataset variant of the benchmark. For 
-example, executing the HPS for the dataset variant `dopanim-full` via SLURM can be done according to
+example, executing the HPS for the dataset variant `mgc-full` via SLURM can be done according to
 ```bash
 projectpath$ conda activate crowd-hpo
-projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part1.sh
-projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part2.sh
-projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part3.sh
-projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_dopanim_full_part4.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_music_genres_full_part1.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_music_genres_full_part2.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_music_genres_full_part3.sh
+projectpath$ sbatch path_to_bash_scripts/hyperparameter_search_music_genres_full_part4.sh
 ```
 
 ### Results
 Once all experiments are completed, their associated results can be loaded via [`mlflow`](https://mlflow.org/). 
 To get a full presentation of these results, you need to start the Jupyter notebook 
-[`analyze_results.ipynb`](empirical_evaluation/analyze_results.ipynb) and follow its instructions.
+[`analyze_results.ipynb`](empirical_evaluation/jupyter_notebooks/analyze_results.ipynb) and follow its instructions.
 ```bash
 projectpath$ conda activate crowd-hpo
 projectpath$ cd empirical_evaluation/jupyter_notebooks

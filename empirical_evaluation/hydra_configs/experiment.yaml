@@ -1,7 +1,7 @@
 defaults:
-  - data: spc
-  - classifier: annot_mix
-  - architecture: tabnet_spc
+  - data: music_genres
+  - classifier: coin_net
+  - architecture: tabnet_music_genres
   - ssl_model: none
   - _self_
 experiment_name: "test"
