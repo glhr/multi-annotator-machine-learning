@@ -1,12 +1,12 @@
 defaults:
-  - data: dopanim
+  - data: spc
   - classifier: annot_mix
-  - architecture: dino_head
-  - ssl_model: dino_backbone
+  - architecture: tabnet_spc
+  - ssl_model: none
   - _self_
 experiment_name: "test"
 # TODO: Replace path for saving results via `mlflow`.
-mlruns_path: "."
+mlruns_path: ".test"
 accelerator: "cpu"
 seed: 0
 # TODO: Replace path for saving results via `hydra`.
