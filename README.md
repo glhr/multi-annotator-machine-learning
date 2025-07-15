@@ -2,11 +2,10 @@
 <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
 <a href="https://www.pytorchlightning.ai/"><img alt="PyTorch Lightning" src="https://img.shields.io/badge/PyTorch_Lightning-792ee5?logo=pytorch-lightning&logoColor=white"></a>
 <a href="https://hydra.cc/"><img alt="Config: Hydra" src="https://img.shields.io/badge/Config-Hydra-89b8cd"></a>
-<a href="https://arxiv.org/abs/2504.09085"><img alt="crowd-hpo @ arXiv 2025" src="https://img.shields.io/badge/arXiv-crowd--hpo @ arXiv 2025-aqua"></a>
 
 This project provides the codebase associated with the paper
-> Marek Herde, Lukas Lührs, Denis Huseljic, and Bernhard Sick. crowd-hpo: Realistic Hyperparameter Optimization and
-> Benchmarking for Learning from Crowds with Noisy Labels. arXiv 2025.
+> Anonymous. crowd-hpo: Realistic Hyperparameter Optimization and
+> Benchmarking for Learning from Crowds with Noisy Labels. Under Review at TMLR. 2025.
 
 <div align="left">
   <img src="./figures/crowd-hpo-motivation.png" alt="logo" width="1000">
@@ -115,4 +114,4 @@ projectpath/empirical_evaluation/jupyter_notebooks$ jupyter-notebook analyze_res
 ## Trouble Shooting :rotating_light:
 If you encounter any problems, watch out for any `TODO` comments, which give hints or instructions to ensure the 
 functionality of the code. If the problems are still not resolved, feel free to create a corresponding GitHub issue
-or contact us directly via the e-mail [marek.herde@uni-kassel.de](mailto:marek.herde@uni-kassel.de)
+or contact us directly via the e-mail [anonymous@anonymous.com](mailto:anonymous@anonymous.com)

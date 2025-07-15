@@ -217,19 +217,19 @@ if __name__ == "__main__":
     experiment_type = "hyperparameter_search"
 
     # Path to the Python file `perform_experiment.py`.
-    path_python_file = "/mnt/home/mherde/projects/github/multi-annotator-machine-learning/empirical_evaluation/python_scripts/perform_experiment.py"
+    path_python_file = "your_absolute_path/perform_experiment.py"
 
     # Path to the directory, where the generated scripts for execution with or without SLURM are to be saved.
     directory = "../crowd_hpo_scripts"
 
     # Path to the directory, where the datasets have been stored.
-    data_sets_path = "/mnt/work/mherde/maml/data"
+    data_sets_path = "your_absolut_path"
 
     # Path to the directory, where the `mlflow` saves the experimental results.
-    mlruns_path = "/mnt/work/mherde/maml/crowd_hpo"
+    mlruns_path = "your_absolut_path"
 
     # Path to the directory, where the `hydra` saves the experimental logs.
-    hydra_run_path = "/mnt/work/mherde/maml/crowd-opt/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}"
+    hydra_run_path = "your_absolut_path/${now:%Y-%m-%d}/${now:%H-%M-%S}"
 
     # Path to the directory for the cache of the experimental results. It's used to create only scripts for experiments not yet performed.
     cache_path = "../crowd_hpo_cache"
@@ -250,7 +250,7 @@ if __name__ == "__main__":
     cpus_per_task = 2
 
     # SLURM parameter specifying the directory where any SLURM logs are stored.
-    slurm_logs_path = "/mnt/work/mherde/maml/crowd_opt_logs"
+    slurm_logs_path = "your_absolut_path"
 
     # SLURM parameter specifying on which partition the experiments are performed.
     partition = "main"
