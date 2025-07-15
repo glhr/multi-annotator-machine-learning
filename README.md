@@ -26,7 +26,7 @@ As a prerequisite, we assume that we have a Linux distribution as an operating s
 ```bash
 projectpath$ conda env create -f environment.yml
 ```
-As a fallback in the case of any issues with the previous installation, we also provie a 
+As a fallback in the case of any issues with the previous installation, we also provide a 
 [`requirements.txt`](requirements.txt) file, which lists all manually installed Python packages:
 ```bash
 projectpath$ conda create -n crowd-hpo python=3.9
