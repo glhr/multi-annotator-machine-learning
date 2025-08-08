@@ -7,7 +7,7 @@ import json
 from PIL import Image
 from skactiveml.utils import ExtLabelEncoder, rand_argmax
 from sklearn.preprocessing import StandardScaler
-from torchvision.datasets.utils import download_and_extract_archive
+from torchvision.datasets.utils import extract_archive
 from torchvision.transforms import (
     ToTensor,
     Normalize,
@@ -23,6 +23,7 @@ from typing import Literal, Optional
 from datasets import load_dataset
 import pandas as pd
 from sklearn.model_selection import PredefinedSplit
+from huggingface_hub import snapshot_download
 
 from ._base import MultiAnnotatorDataset, AGGREGATION_METHODS, TRANSFORMS, VERSIONS
 
@@ -30,10 +31,13 @@ from ._base import MultiAnnotatorDataset, AGGREGATION_METHODS, TRANSFORMS, VERSI
 class JAMBO(MultiAnnotatorDataset):
     """JAMBO
 
-    The JAMBO [1, 2] dataset features about 15,750 animal images of 15 classes, organized into four groups of
-    doppelganger animals and collected together with ground truth labels from iNaturalist. For approximately 10,500 of
-    these images, 20 humans provided over 52,000 annotations with an accuracy of circa 67%.
-
+    The JAMBO [1] dataset features 3750 images of the seabed captured over the course of several months in the
+    Greater North Sea, Denmark. Each image was annotated by six annotators (three computer vision experts and three
+    marine biologists) as belonging to one of 3 classes: "sand", "stone", and "bad". For around 30\% of the images,
+    the annotators do not fully agree on the correct class label. Since there is no "golden" ground truth, we consider
+    two label sets as the reference: the majority vote of the annotators and the true class labels provided by Bio2, 
+    which is the most experienced.
+    
     Parameters
     ----------
     root : str
@@ -59,15 +63,14 @@ class JAMBO(MultiAnnotatorDataset):
 
     References
     ----------
-    [1] Humblot-Renaux, G., Johansen, A. S., Schmidt, J. E., Irlind, A. F., Madsen, N., Moeslund, T. B., & Pedersen, M.
-    (2025). Underwater Uncertainty: A Multi-annotator Image Dataset for Benthic Habitat Classification, 
+    [1] Humblot-Renaux, G., Johansen, A. S., Schmidt, J. E., Irlind, A. F., Madsen, N., Moeslund, T. B., 
+    & Pedersen, M. (2025). Underwater Uncertainty: A Multi-annotator Image Dataset for Benthic Habitat Classification, 
     Computer Vision -- ECCV 2024 Workshops (pp. 87-104). Springer. https://doi.org/10.1007/978-3-031-92387-6_6
 
     """
 
     base_folder = "jambo"
     hf_repo = "vapaau/jambo"
-    #filename = "11479589.zip"
     image_dir = "images"
     classes = np.array(
         [
@@ -105,17 +108,22 @@ class JAMBO(MultiAnnotatorDataset):
         transform: TRANSFORMS = "auto",
         variant: str = "full",
         annotation_type: Literal["class-labels", "probabilities"] = "class-labels",
+        normalization_params: Literal["imagenet", "0.5"] = "imagenet",
+        ground_truth_variant: Literal["majority", "expert"] = "expert",
     ):
-        # Download data.
+        # Download the data.
         self.folder = os.path.join(root, JAMBO.base_folder)
-        #if download:
-        #    self.hf_dataset = load_dataset(JAMBO.hf_repo, cache_dir=self.folder)
-        #else:
-        #    self.hf_dataset = load_dataset(JAMBO.hf_repo, split=version, cache_dir=self.folder, download_mode="reuse_dataset_if_exists")
+        is_available = os.path.exists(self.folder)
+        if download and not is_available:
+            snapshot_download(repo_id=JAMBO.hf_repo, local_dir=self.folder, repo_type="dataset", revision="zip")
+            # Extract the images zip file.
+            extract_archive(os.path.join(self.folder, JAMBO.image_dir + ".zip"), self.folder, remove_finished=False)
 
         # Set dataset parameters.
         self.variant = variant
         self.annotation_type = annotation_type
+        self.normalization_params = normalization_params
+        self.ground_truth_variant = ground_truth_variant
 
         # Check availability of data.
         is_available = os.path.exists(self.folder)
@@ -136,13 +144,17 @@ class JAMBO(MultiAnnotatorDataset):
         self.z = self.load_annotations() if version == "train" else None
 
         # Set transforms.
-        mean = (0.485, 0.456, 0.406) # TODO: Adjust mean and std for your dataset
-        std = (0.229, 0.224, 0.225) # TODO: Adjust mean and std for your dataset
+        if self.normalization_params == "imagenet":
+            mean = (0.485, 0.456, 0.406) 
+            std = (0.229, 0.224, 0.225) 
+        elif self.normalization_params == "0.5":
+            mean = (0.5, 0.5, 0.5)
+            std = (0.5, 0.5, 0.5)
         if transform == "auto" and version == "train":
             self.transform = Compose(
                 [
-                    Resize(232),
-                    RandomResizedCrop(224),
+                    Resize(32),
+                    #RandomResizedCrop(224),
                     RandomHorizontalFlip(),
                     ToTensor(),
                     RandomErasing(),
@@ -150,7 +162,7 @@ class JAMBO(MultiAnnotatorDataset):
                 ]
             )
         elif transform == "auto" and version in ["valid", "test"]:
-            self.transform = Compose([Resize(232), CenterCrop(224), ToTensor(), Normalize(mean, std)])
+            self.transform = Compose([Resize(32), CenterCrop(32), ToTensor(), Normalize(mean, std)])
         else:
             self.transform = transform
 
@@ -370,10 +382,16 @@ class JAMBO(MultiAnnotatorDataset):
         """
         meta_df = pd.read_csv(os.path.join(self.folder, "jambo_meta_public.csv"))
         splits_df = pd.read_csv(os.path.join(self.folder, "jambo_splits_public.csv"), index_col="filename")
-        folds = splits_df["date_splits"]
+        folds = splits_df["date_splits"] # TODO: make this a parameter
         ps = PredefinedSplit(folds)
-        ps.get_n_splits()
-        train_index, test_index = list(ps.split())[0] # first fold
+        print(ps.get_n_splits(), "num splits")
+        
+        if self.ground_truth_variant == "majority":
+            label_col = "majority_label"
+        elif self.ground_truth_variant == "expert":
+            label_col = "Bio2"
+        
+        train_index, test_index = list(ps.split())[0] # first fold in the split
         split_indices = {
             "train": meta_df['filename'].iloc[train_index].tolist(),
             "test": meta_df['filename'].iloc[test_index].tolist(),
@@ -384,7 +402,7 @@ class JAMBO(MultiAnnotatorDataset):
         for i, df_row in meta_df.iterrows():
             observation_id = df_row["filename"]
             if observation_id in split_indices[version]:
-                y_true_list.append(df_row["Bio1"])
+                y_true_list.append(df_row[label_col])
                 observation_id_list.append(observation_id)
                 
         print(f"Loaded {len(y_true_list)} true class labels for version '{version}'.")
@@ -424,7 +442,7 @@ class JAMBO(MultiAnnotatorDataset):
             fill_value=-1,
             dtype=float,
         )
-        print(observation_ids, annotators, classes)
+        #print(observation_ids, annotators, classes)
         for annotation_id, annotation_row in annotations_df.iterrows():
             if annotation_row["filename"] not in observation_ids:
                 continue
